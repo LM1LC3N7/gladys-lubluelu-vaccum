@@ -1,0 +1,167 @@
+{
+  "manifest_version": 1,
+  "type": "device",
+  "name": "Lubluelu SL68 (Tuya)",
+  "description": {
+    "en": "Control the Lubluelu SL68 and other Tuya/Smart Life robot vacuums locally over the LAN — start/pause, mode, water level, suction, battery, return to dock.",
+    "fr": "Contrôlez l'aspirateur robot Lubluelu SL68 et d'autres modèles Tuya/Smart Life en local sur le réseau : marche/pause, mode, niveau d'eau, puissance d'aspiration, batterie, retour à la base."
+  },
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-lubluelu-vaccum:0.1.0",
+  "gladys_version": ">=4.86.1",
+  "categories": ["appliances"],
+  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/lm1lc3n7/gladys-lubluelu-vaccum/main/cover.png",
+  "network_discovery": [
+    {
+      "type": "udp-broadcast",
+      "ports": [6666, 6667]
+    }
+  ],
+  "config_schema": [
+    {
+      "key": "intro",
+      "type": "section",
+      "label": {
+        "en": "Tuya Cloud account (one-time setup)",
+        "fr": "Compte Tuya Cloud (à configurer une seule fois)"
+      },
+      "description": {
+        "en": "This vacuum is controlled directly over your LAN once configured — no cloud round-trip for day-to-day commands. But the device's local_key (and its rotation over time) only ever lives behind the Tuya Cloud account your Smart Life/Tuya Smart app uses, so a free Tuya IoT Platform project is required once: create a Cloud project, link your Smart Life/Tuya Smart app account to it (Devices tab -> Link Tuya App Account, scan the QR code with the app), then copy the project's Access ID/Client ID and Access Secret/Client Secret below, and the vacuum's Device ID from the All Devices list.",
+        "fr": "Une fois configuré, cet aspirateur est piloté directement sur votre réseau local, sans aller-retour cloud pour les commandes du quotidien. Mais le local_key de l'appareil (et son renouvellement dans le temps) ne se trouve que derrière le compte Tuya Cloud utilisé par votre application Smart Life/Tuya Smart : un projet Tuya IoT Platform gratuit est donc requis une fois — créez un projet Cloud, liez votre compte Smart Life/Tuya Smart (onglet Appareils -> Lier un compte d'application Tuya, scannez le QR code avec l'app), puis copiez l'Access ID/Client ID et l'Access Secret/Client Secret du projet ci-dessous, ainsi que le Device ID de l'aspirateur depuis la liste Tous les appareils."
+      },
+      "links": [
+        {
+          "url": "https://iot.tuya.com/",
+          "label": {
+            "en": "Tuya IoT Platform",
+            "fr": "Tuya IoT Platform"
+          }
+        }
+      ]
+    },
+    {
+      "key": "access_id",
+      "type": "secret",
+      "label": {
+        "en": "Access ID / Client ID",
+        "fr": "Access ID / Client ID"
+      },
+      "required": true
+    },
+    {
+      "key": "access_secret",
+      "type": "secret",
+      "label": {
+        "en": "Access Secret / Client Secret",
+        "fr": "Access Secret / Client Secret"
+      },
+      "required": true
+    },
+    {
+      "key": "region",
+      "type": "select",
+      "label": {
+        "en": "Tuya data center",
+        "fr": "Centre de données Tuya"
+      },
+      "description": {
+        "en": "The data center your Cloud project was created in (visible in its URL on the Tuya IoT Platform: eu/us/cn/in).",
+        "fr": "Le centre de données dans lequel votre projet Cloud a été créé (visible dans son URL sur Tuya IoT Platform : eu/us/cn/in)."
+      },
+      "required": true,
+      "default": "eu",
+      "options": [
+        { "value": "eu", "label": { "en": "Europe", "fr": "Europe" } },
+        { "value": "us", "label": { "en": "Americas", "fr": "Amériques" } },
+        { "value": "cn", "label": { "en": "China", "fr": "Chine" } },
+        { "value": "in", "label": { "en": "India", "fr": "Inde" } }
+      ]
+    },
+    {
+      "key": "device_ids",
+      "type": "string",
+      "label": {
+        "en": "Device ID(s)",
+        "fr": "Identifiant(s) d'appareil"
+      },
+      "description": {
+        "en": "The vacuum's Device ID, from the Tuya IoT Platform's All Devices list (Devices tab). Several vacuums: separate their ids with commas.",
+        "fr": "Le Device ID de l'aspirateur, depuis la liste Tous les appareils de Tuya IoT Platform (onglet Appareils). Plusieurs aspirateurs : séparez les identifiants par des virgules."
+      },
+      "required": true,
+      "default": ""
+    },
+    {
+      "key": "device_ips",
+      "type": "string",
+      "label": {
+        "en": "Manual LAN IP(s) (advanced)",
+        "fr": "IP(s) locale(s) manuelle(s) (avancé)"
+      },
+      "description": {
+        "en": "Only needed if the automatic LAN broadcast scan does not find a device's IP (blocked VLAN, \"Local Network Discovery\" disabled in the app...). Comma-separated device_id=ip pairs, e.g. \"eb1234...=192.168.1.42\".",
+        "fr": "Utile seulement si le scan de diffusion réseau automatique ne trouve pas l'IP d'un appareil (VLAN bloqué, « Découverte réseau locale » désactivée dans l'app...). Paires device_id=ip séparées par des virgules, ex. « eb1234...=192.168.1.42 »."
+      },
+      "required": false,
+      "default": ""
+    },
+    {
+      "key": "refresh_interval_minutes",
+      "type": "number",
+      "label": {
+        "en": "Tuya Cloud refresh interval (min)",
+        "fr": "Intervalle de rafraîchissement Tuya Cloud (min)"
+      },
+      "description": {
+        "en": "How often the local_key and IP are re-checked against the Tuya Cloud API. The local_key rotates whenever the device re-links to the cloud, so this must run occasionally even though day-to-day control stays local.",
+        "fr": "Fréquence de revérification du local_key et de l'IP auprès de l'API Cloud Tuya. Le local_key change à chaque re-liaison de l'appareil au cloud : ce rafraîchissement doit donc tourner régulièrement, même si le contrôle au quotidien reste local."
+      },
+      "required": false,
+      "default": 60,
+      "min": 5,
+      "max": 1440
+    },
+    {
+      "key": "protocol_version",
+      "type": "select",
+      "label": {
+        "en": "Local protocol version (advanced)",
+        "fr": "Version du protocole local (avancé)"
+      },
+      "description": {
+        "en": "Fallback used only when the LAN broadcast scan hasn't identified the device's own version yet. Most devices from 2020 onwards use 3.3 or 3.4.",
+        "fr": "Utilisé en secours uniquement tant que le scan de diffusion réseau n'a pas identifié la version propre à l'appareil. La plupart des appareils depuis 2020 utilisent 3.3 ou 3.4."
+      },
+      "required": false,
+      "default": "3.3",
+      "options": [
+        { "value": "3.1", "label": { "en": "3.1", "fr": "3.1" } },
+        { "value": "3.3", "label": { "en": "3.3", "fr": "3.3" } },
+        { "value": "3.4", "label": { "en": "3.4", "fr": "3.4" } }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "key": "test_connection",
+      "label": {
+        "en": "Test connection",
+        "fr": "Tester la connexion"
+      },
+      "timeout_seconds": 20,
+      "fields": [
+        {
+          "key": "device",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": true
+        }
+      ]
+    }
+  ]
+}

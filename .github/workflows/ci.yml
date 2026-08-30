@@ -1,0 +1,59 @@
+# -----------------------------------------------------------------------------
+# Continuous integration: runs on every push and every pull request.
+#
+# Two independent jobs:
+#   1. quality -> Prettier, ESLint, `node --test` (no extra dependency).
+#   2. docker  -> `docker build .`, no push. Without this job a Dockerfile
+#      change (base image bump, a COPY typo...) goes green on `quality` alone
+#      and is only ever actually built the day someone cuts a release — this
+#      catches it on every PR instead.
+#
+# Runs on Node 22, the version the Docker image ships with (see the
+# Dockerfile), so the check exercises the exact runtime the integration runs on.
+# -----------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    name: Lint & test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting (Prettier)
+        run: npm run format:check
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+  docker:
+    runs-on: ubuntu-latest
+    name: Docker build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build the image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
