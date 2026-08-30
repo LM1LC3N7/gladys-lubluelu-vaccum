@@ -18,6 +18,22 @@ const manifest = JSON.parse(
 // Registered directly in index.js.
 const HANDLED_ACTIONS = ['test_connection'];
 
+// Mirrors the store's manifest.schema.json bounds — checked here too since a
+// manifest passing this repo's own CI is otherwise no guarantee it clears
+// `npx github:GladysAssistant/integration-store .` before a release.
+test('name is 3-30 characters (manifest.schema.json)', () => {
+  assert.ok(manifest.name.length >= 3 && manifest.name.length <= 30, manifest.name);
+});
+
+test('description.en/fr are each 10-100 characters (manifest.schema.json)', () => {
+  for (const [lang, text] of Object.entries(manifest.description)) {
+    assert.ok(
+      text.length >= 10 && text.length <= 100,
+      `description.${lang} is ${text.length} characters, must be 10-100: "${text}"`,
+    );
+  }
+});
+
 test('every manifest action has a registered handler', () => {
   for (const action of manifest.actions ?? []) {
     assert.ok(
