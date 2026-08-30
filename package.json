@@ -1,6 +1,6 @@
 {
   "name": "gladys-lubluelu-vaccum",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Gladys Assistant external integration to control the Lubluelu SL68 and other Tuya (Smart Life) robot vacuums locally over the LAN.",
   "type": "module",
