@@ -1,35 +1,42 @@
 // -----------------------------------------------------------------------------
 // Device discovery + connection composition.
 //
-// Ties together the three independent sources of truth this integration
-// needs per configured Tuya device id:
-//   - the Tuya Cloud API (src/tuya/cloud.js)   -> local_key + DP schema
-//   - the mediated UDP broadcast scan          -> the LAN IP (best-effort)
-//   - config.device_ips                        -> the manual IP fallback
-// into the payload gladys.publishDiscoveredDevices() expects, and keeps
-// already-created devices' local sessions in sync with it (a rotated
-// local_key, an IP that changed in DHCP...) — see src/devices/vacuum.js for
-// the per-device connection logic itself; this module only composes.
+// Two independent, mergeable onboarding methods feed the same registry:
+//   - "Simple" (recommended): src/tuya/deviceSharing.js — one QR login lists
+//     EVERY device on the account, each with its local_key + full DP schema
+//     already attached. Nothing to configure per device: pairing a new
+//     vacuum in the Smart Life app is enough, exactly like the official app.
+//   - "Advanced": the Tuya Cloud API (src/tuya/cloud.js) for an explicit
+//     list of Device ids (config.device_ids).
+// Both are then joined with whatever LAN IP the mediated UDP broadcast scan
+// reports (best-effort, config.device_ips is the manual fallback) into the
+// payload gladys.publishDiscoveredDevices() expects, and used to keep
+// already-created devices' local sessions in sync (a rotated local_key, an
+// IP that changed in DHCP...) — see src/devices/vacuum.js for the per-device
+// connection logic itself; this module only composes.
 // -----------------------------------------------------------------------------
 
 import { createLogger } from '@gladysassistant/integration-sdk';
 import { discoverTuyaAnnouncements } from '../tuya/udpDiscovery.js';
 import { indexDpsByCode } from '../tuya/dpsSchema.js';
+import { toRegistryEntry } from '../tuya/deviceSharing.js';
 import { buildDiscoveredDevice, connectDevice, deviceIdOf } from './vacuum.js';
 
 const logger = createLogger({ name: 'discovery' });
 
 /**
- * Caches what the Tuya Cloud API + UDP broadcast know about every configured
- * device id, and refresh()es it on demand — the entry point (index.js) calls
- * refresh() at startup, on every config change, on Discovery scans, and on a
- * periodic timer (config.refresh_interval_minutes) to catch a rotated
- * local_key before it locks the local session out.
+ * Caches what each configured onboarding method + the UDP broadcast scan know
+ * about every device, and refresh()es it on demand — the entry point
+ * (index.js) calls refresh() at startup, on every config change, on Discovery
+ * scans, and on a periodic timer (config.refresh_interval_minutes) to catch a
+ * rotated local_key before it locks the local session out.
  */
 export class TuyaDeviceRegistry {
-  constructor(cloud) {
+  /** @param {{ cloud?: import('../tuya/cloud.js').TuyaCloudClient, sharing?: import('../tuya/deviceSharing.js').TuyaDeviceSharingClient }} clients */
+  constructor({ cloud, sharing } = {}) {
     this.cloud = cloud;
-    // deviceId -> { deviceId, name, localKey, version, dpsByCode, ip }
+    this.sharing = sharing;
+    // deviceId -> { deviceId, name, localKey, version, dpsByCode, ip, cloud, source }
     this.devices = new Map();
   }
 
@@ -42,10 +49,10 @@ export class TuyaDeviceRegistry {
   }
 
   /**
-   * Re-fetch cloud device details + DP schema for every configured id, and
-   * merge in whatever IP the UDP broadcast scan currently reports. A single
-   * device's cloud lookup failing (offline, wrong id...) is logged and
-   * skipped rather than aborting every other device's refresh.
+   * Re-fetch every source and merge the result. A single device (or an
+   * entire source) failing is logged and skipped rather than aborting the
+   * other source's refresh — and never evicts what a previous, successful
+   * refresh already knows (see the per-source pruning below).
    */
   async refresh(gladys, deviceIds) {
     let announcements = [];
@@ -56,6 +63,52 @@ export class TuyaDeviceRegistry {
     }
     const ipByGwId = new Map(announcements.map((a) => [a.gwId, a]));
 
+    if (this.sharing) {
+      await this._refreshSharing(ipByGwId);
+    }
+    if (this.cloud) {
+      await this._refreshCloud(deviceIds, ipByGwId);
+    }
+  }
+
+  async _refreshSharing(ipByGwId) {
+    let devices;
+    try {
+      devices = await this.sharing.discoverDevices();
+    } catch (err) {
+      // "No active device-sharing session" just means the QR login hasn't
+      // happened (yet) — expected and silent-ish, not a failure to surface
+      // loudly on every refresh tick until the user does log in.
+      const level = /No active device-sharing session/.test(err.message) ? 'debug' : 'error';
+      logger[level](`Device sharing discovery failed: ${err.message}`);
+      return;
+    }
+
+    const freshIds = new Set();
+    for (const device of devices) {
+      const entry = toRegistryEntry(device);
+      const announcement = ipByGwId.get(entry.deviceId);
+      this.devices.set(entry.deviceId, {
+        ...entry,
+        ip: announcement?.ip || entry.ip,
+        version: announcement?.version,
+        cloud: this.sharing,
+        source: 'sharing',
+      });
+      freshIds.add(entry.deviceId);
+    }
+
+    // Only a device-sharing entry from a PREVIOUS successful call can be
+    // pruned here (an unlinked/removed device) — cloud-sourced entries are
+    // pruned by _refreshCloud() against config.device_ids instead.
+    for (const [id, entry] of this.devices) {
+      if (entry.source === 'sharing' && !freshIds.has(id)) {
+        this.devices.delete(id);
+      }
+    }
+  }
+
+  async _refreshCloud(deviceIds, ipByGwId) {
     for (const deviceId of deviceIds) {
       try {
         const [details, specifications] = await Promise.all([
@@ -70,16 +123,17 @@ export class TuyaDeviceRegistry {
           version: announcement?.version,
           dpsByCode: indexDpsByCode(specifications),
           ip: announcement?.ip,
+          cloud: this.cloud,
+          source: 'cloud',
         });
       } catch (err) {
         logger.error(`Tuya Cloud lookup failed for ${deviceId}: ${err.message}`);
       }
     }
 
-    // Drop entries for ids no longer configured.
-    for (const knownId of this.devices.keys()) {
-      if (!deviceIds.includes(knownId)) {
-        this.devices.delete(knownId);
+    for (const [id, entry] of this.devices) {
+      if (entry.source === 'cloud' && !deviceIds.includes(id)) {
+        this.devices.delete(id);
       }
     }
   }
@@ -105,12 +159,12 @@ export async function reconcileConnections(gladys, config, registry) {
     const deviceId = deviceIdOf(device);
     const entry = deviceId ? registry.get(deviceId) : undefined;
     if (!entry) {
-      continue; // Not (yet, or anymore) known through the cloud — nothing to connect with.
+      continue; // Not (yet, or anymore) known by any configured method — nothing to connect with.
     }
     if (!entry.localKey || entry.dpsByCode.size === 0) {
-      logger.warn(`Skipping ${device.external_id}: incomplete Tuya Cloud data`);
+      logger.warn(`Skipping ${device.external_id}: incomplete Tuya data`);
       continue;
     }
-    connectDevice(gladys, device, config, { ...entry, cloud: registry.cloud });
+    connectDevice(gladys, device, config, entry);
   }
 }

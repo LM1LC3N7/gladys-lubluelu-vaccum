@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeConfig, isConfigured, parseDeviceIps, DEFAULT_CONFIG } from '../src/config.js';
+import {
+  normalizeConfig,
+  isCloudConfigured,
+  isSharingConfigured,
+  parseDeviceIps,
+  DEFAULT_CONFIG,
+} from '../src/config.js';
 
 test('normalizeConfig returns the defaults when called with no argument', () => {
   const config = normalizeConfig();
@@ -60,11 +66,21 @@ test('parseDeviceIps parses device_id=ip pairs and ignores malformed entries', (
   assert.deepEqual(parseDeviceIps(undefined), {});
 });
 
-test('isConfigured requires credentials AND at least one device id', () => {
-  assert.equal(isConfigured(normalizeConfig()), false);
-  assert.equal(isConfigured(normalizeConfig({ access_id: 'a', access_secret: 'b' })), false);
+test('isCloudConfigured requires credentials AND at least one device id', () => {
+  assert.equal(isCloudConfigured(normalizeConfig()), false);
+  assert.equal(isCloudConfigured(normalizeConfig({ access_id: 'a', access_secret: 'b' })), false);
   assert.equal(
-    isConfigured(normalizeConfig({ access_id: 'a', access_secret: 'b', device_ids: 'eb111' })),
+    isCloudConfigured(normalizeConfig({ access_id: 'a', access_secret: 'b', device_ids: 'eb111' })),
     true,
   );
+});
+
+test('isSharingConfigured only requires a user code', () => {
+  assert.equal(isSharingConfigured(normalizeConfig()), false);
+  assert.equal(isSharingConfigured(normalizeConfig({ user_code: 'ABC123' })), true);
+});
+
+test('normalizeConfig falls back to the default for an unknown qr_scheme', () => {
+  assert.equal(normalizeConfig({ qr_scheme: 'not-a-scheme' }).qr_scheme, DEFAULT_CONFIG.qr_scheme);
+  assert.equal(normalizeConfig({ qr_scheme: 'tuyaSmart' }).qr_scheme, 'tuyaSmart');
 });

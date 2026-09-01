@@ -20,11 +20,63 @@
   ],
   "config_schema": [
     {
+      "key": "intro_simple",
+      "type": "section",
+      "label": {
+        "en": "Smart Life account (simple, recommended)",
+        "fr": "Compte Smart Life (simple, recommandé)"
+      },
+      "description": {
+        "en": "No Tuya developer account needed. Enter your Smart Life user code below, click Connect, then scan the QR code with the Smart Life/Tuya Smart app already used for the vacuum and tap \"Confirm login\" — every device on your account is then discovered automatically, exactly like adding a device in the official app. The user code is in the app under Me > Settings > Account and Security > User Code.",
+        "fr": "Aucun compte développeur Tuya nécessaire. Entrez votre code utilisateur Smart Life ci-dessous, cliquez sur Connecter, puis scannez le QR code avec l'application Smart Life/Tuya Smart déjà utilisée pour l'aspirateur et validez « Confirmer la connexion » — tous les appareils de votre compte sont ensuite découverts automatiquement, exactement comme dans l'application officielle. Le code utilisateur se trouve dans l'app sous Moi > Paramètres > Compte et sécurité > Code utilisateur."
+      }
+    },
+    {
+      "key": "user_code",
+      "type": "string",
+      "label": {
+        "en": "Smart Life user code",
+        "fr": "Code utilisateur Smart Life"
+      },
+      "required": false,
+      "default": ""
+    },
+    {
+      "key": "tuya_qr_login",
+      "type": "account_link",
+      "label": {
+        "en": "Connect your Smart Life account",
+        "fr": "Connecter votre compte Smart Life"
+      },
+      "description": {
+        "en": "Opens a QR code — scan it with the Smart Life/Tuya Smart app and confirm. Requires the user code above.",
+        "fr": "Ouvre un QR code — scannez-le avec l'application Smart Life/Tuya Smart et confirmez. Nécessite le code utilisateur ci-dessus."
+      }
+    },
+    {
+      "key": "qr_scheme",
+      "type": "select",
+      "label": {
+        "en": "QR app (advanced)",
+        "fr": "Application du QR (avancé)"
+      },
+      "description": {
+        "en": "Change only if scanning or confirmation does not work for your account.",
+        "fr": "À changer seulement si le scan ou la confirmation ne fonctionne pas pour votre compte."
+      },
+      "required": false,
+      "default": "smartlife",
+      "options": [
+        { "value": "smartlife", "label": { "en": "Smart Life", "fr": "Smart Life" } },
+        { "value": "tuyaSmart", "label": { "en": "Tuya Smart", "fr": "Tuya Smart" } }
+      ]
+    },
+    {
       "key": "intro",
       "type": "section",
       "label": {
-        "en": "Tuya Cloud account (one-time setup)",
-        "fr": "Compte Tuya Cloud (à configurer une seule fois)"
+        "en": "Tuya Cloud account (advanced, optional)",
+        "fr": "Compte Tuya Cloud (avancé, optionnel)"
       },
       "description": {
         "en": "This vacuum is controlled directly over your LAN once configured — no cloud round-trip for day-to-day commands. But the device's local_key (and its rotation over time) only ever lives behind the Tuya Cloud account your Smart Life/Tuya Smart app uses, so a free Tuya IoT Platform project is required once: create a Cloud project, link your Smart Life/Tuya Smart app account to it (Devices tab -> Link Tuya App Account, scan the QR code with the app), then copy the project's Access ID/Client ID and Access Secret/Client Secret below, and the vacuum's Device ID from the All Devices list.",
@@ -47,7 +99,7 @@
         "en": "Access ID / Client ID",
         "fr": "Access ID / Client ID"
       },
-      "required": true
+      "required": false
     },
     {
       "key": "access_secret",
@@ -56,7 +108,7 @@
         "en": "Access Secret / Client Secret",
         "fr": "Access Secret / Client Secret"
       },
-      "required": true
+      "required": false
     },
     {
       "key": "region",
@@ -69,7 +121,7 @@
         "en": "The data center your Cloud project was created in (visible in its URL on the Tuya IoT Platform: eu/us/cn/in).",
         "fr": "Le centre de données dans lequel votre projet Cloud a été créé (visible dans son URL sur Tuya IoT Platform : eu/us/cn/in)."
       },
-      "required": true,
+      "required": false,
       "default": "eu",
       "options": [
         {
@@ -110,10 +162,10 @@
         "fr": "Identifiant(s) d'appareil"
       },
       "description": {
-        "en": "The vacuum's Device ID, from the Tuya IoT Platform's All Devices list (Devices tab). Several vacuums: separate their ids with commas.",
-        "fr": "Le Device ID de l'aspirateur, depuis la liste Tous les appareils de Tuya IoT Platform (onglet Appareils). Plusieurs aspirateurs : séparez les identifiants par des virgules."
+        "en": "The vacuum's Device ID, from the Tuya IoT Platform's All Devices list (Devices tab). Several vacuums: separate their ids with commas. Not needed with the Smart Life account method above, which discovers every device automatically.",
+        "fr": "Le Device ID de l'aspirateur, depuis la liste Tous les appareils de Tuya IoT Platform (onglet Appareils). Plusieurs aspirateurs : séparez les identifiants par des virgules. Inutile avec la méthode Compte Smart Life ci-dessus, qui découvre tous les appareils automatiquement."
       },
-      "required": true,
+      "required": false,
       "default": ""
     },
     {

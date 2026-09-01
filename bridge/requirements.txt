@@ -1,0 +1,7 @@
+tuya-device-sharing-sdk==0.2.15
+cryptography==50.0.1
+requests==2.34.2
+# Imported unconditionally by tuya_sharing/mq.py (live MQTT push updates),
+# even though this bridge never calls Manager.refresh_mq() — the import
+# still has to succeed for `import tuya_sharing` itself to work at all.
+paho-mqtt==2.1.0

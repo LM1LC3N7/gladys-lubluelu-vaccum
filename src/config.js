@@ -1,14 +1,21 @@
 // -----------------------------------------------------------------------------
-// Integration configuration: Tuya Cloud API credentials + device selection.
+// Integration configuration: two independent onboarding methods, either one
+// (or both) usable at once — see src/devices/index.js#TuyaDeviceRegistry for
+// how they merge into the same device list.
 //
-// Local control (the actual day-to-day path, src/tuya/local.js) needs no
-// cloud access at all once running — but bootstrapping it does: the
-// `local_key` and the DP schema (src/tuya/dpsSchema.js) only ever live behind
-// the Tuya Cloud account the vacuum is registered to (the same one the Smart
-// Life/Tuya Smart app uses), see src/tuya/cloud.js for why and how.
+//   - "Simple" (recommended): Tuya's official Device Sharing QR login, no
+//     developer account at all — just `user_code`, see src/tuya/deviceSharing.js.
+//   - "Advanced": a Tuya IoT Platform Cloud project (Access ID/Secret) +
+//     explicit Device ID(s) — see src/tuya/cloud.js for why and how.
+//
+// Local control itself (the actual day-to-day path, src/tuya/local.js) needs
+// no cloud access at all once running, regardless of which method bootstrapped
+// a device's local_key/DP schema.
 // -----------------------------------------------------------------------------
 
 export const DEFAULT_CONFIG = {
+  user_code: '',
+  qr_scheme: 'smartlife',
   access_id: '',
   access_secret: '',
   region: 'eu',
@@ -22,6 +29,7 @@ const REFRESH_MIN = 5;
 const REFRESH_MAX = 1440;
 export const VALID_REGIONS = ['eu', 'us', 'cn', 'in'];
 export const VALID_PROTOCOL_VERSIONS = ['3.1', '3.3', '3.4'];
+export const VALID_QR_SCHEMES = ['smartlife', 'tuyaSmart'];
 
 function toBoundedNumber(value, fallback, min, max) {
   const parsed = Number(value);
@@ -67,12 +75,16 @@ export function normalizeConfig(raw = {}) {
   const protocolVersion = VALID_PROTOCOL_VERSIONS.includes(raw.protocol_version)
     ? raw.protocol_version
     : DEFAULT_CONFIG.protocol_version;
+  const qrScheme = VALID_QR_SCHEMES.includes(raw.qr_scheme)
+    ? raw.qr_scheme
+    : DEFAULT_CONFIG.qr_scheme;
 
   return {
     ...DEFAULT_CONFIG,
     ...raw,
     region,
     protocol_version: protocolVersion,
+    qr_scheme: qrScheme,
     deviceIds: parseList(raw.device_ids),
     deviceIps: parseDeviceIps(raw.device_ips),
     refresh_interval_minutes: toBoundedNumber(
@@ -84,6 +96,12 @@ export function normalizeConfig(raw = {}) {
   };
 }
 
-export function isConfigured(config) {
+/** The "advanced" Tuya Cloud API method has what it needs to run. */
+export function isCloudConfigured(config) {
   return Boolean(config.access_id && config.access_secret && config.deviceIds.length > 0);
+}
+
+/** The "simple" QR/device-sharing method has what it needs to attempt a login. */
+export function isSharingConfigured(config) {
+  return Boolean(config.user_code);
 }

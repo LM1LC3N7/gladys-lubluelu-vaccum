@@ -9,7 +9,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { DEFAULT_CONFIG, VALID_REGIONS, VALID_PROTOCOL_VERSIONS } from '../src/config.js';
+import {
+  DEFAULT_CONFIG,
+  VALID_REGIONS,
+  VALID_PROTOCOL_VERSIONS,
+  VALID_QR_SCHEMES,
+} from '../src/config.js';
 
 const manifest = JSON.parse(
   await readFile(new URL('../gladys-assistant-integration.json', import.meta.url), 'utf8'),
@@ -86,6 +91,27 @@ test('protocol_version options exactly match src/config.js#VALID_PROTOCOL_VERSIO
     field.options.map((o) => o.value),
     VALID_PROTOCOL_VERSIONS,
   );
+});
+
+test('qr_scheme options exactly match src/config.js#VALID_QR_SCHEMES', () => {
+  const field = manifest.config_schema.find((f) => f.key === 'qr_scheme');
+  assert.deepEqual(
+    field.options.map((o) => o.value),
+    VALID_QR_SCHEMES,
+  );
+});
+
+test('the QR login is an account_link field (no redirect, matches index.js#onOAuthAuthorizeUrl)', () => {
+  const field = manifest.config_schema.find((f) => f.key === 'tuya_qr_login');
+  assert.equal(field.type, 'account_link');
+  assert.equal(field.default, undefined);
+});
+
+test('the classic Tuya Cloud fields are all optional (the simple QR method needs none of them)', () => {
+  for (const key of ['access_id', 'access_secret', 'region', 'device_ids']) {
+    const field = manifest.config_schema.find((f) => f.key === key);
+    assert.equal(field.required, false, `"${key}" must not be required`);
+  }
 });
 
 test('the test_connection action uses the dynamic "devices" select, no static options', () => {

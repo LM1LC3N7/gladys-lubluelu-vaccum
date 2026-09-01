@@ -2,14 +2,15 @@
 // Entry point of the Gladys external integration for the Lubluelu SL68 (and
 // compatible Tuya/Smart Life robot vacuums).
 //
-// Role of this file: wire the SDK to the Tuya cloud+local device logic
-// (src/tuya/, src/devices/). It holds NO Tuya protocol knowledge itself —
-// only:
+// Role of this file: wire the SDK to the Tuya device logic (src/tuya/,
+// src/devices/). It holds NO Tuya protocol knowledge itself — only:
 //   1. instantiates the SDK (connection, auth, reconnection: handled for you);
-//   2. keeps a TuyaDeviceRegistry (src/devices/index.js) refreshed from the
-//      Tuya Cloud API + a mediated UDP broadcast scan, on a timer — this is
-//      what catches a rotated local_key (see the README) before it locks a
-//      local session out;
+//   2. keeps a TuyaDeviceRegistry (src/devices/index.js) refreshed from
+//      whichever onboarding method(s) are configured — the "simple" QR/
+//      device-sharing login (no developer account) and/or the "advanced"
+//      Tuya Cloud API — plus a mediated UDP broadcast scan, on a timer; this
+//      is what catches a rotated local_key (see the README) before it locks
+//      a local session out;
 //   3. registers the event handlers BEFORE connect();
 //   4. connects/reconciles the local session of every vacuum the user
 //      already created.
@@ -21,9 +22,17 @@
 // The SDK reads them automatically: `new GladysIntegration()` is enough.
 // -----------------------------------------------------------------------------
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GladysIntegration, logger } from '@gladysassistant/integration-sdk';
-import { normalizeConfig, isConfigured } from './src/config.js';
+import { normalizeConfig, isCloudConfigured, isSharingConfigured } from './src/config.js';
 import { TuyaCloudClient } from './src/tuya/cloud.js';
+import { PythonBridge } from './src/tuya/pythonBridge.js';
+import {
+  TuyaDeviceSharingClient,
+  buildQrImageUrl,
+  waitForQrLogin,
+} from './src/tuya/deviceSharing.js';
 import {
   TuyaDeviceRegistry,
   buildDiscoveredDevices,
@@ -38,21 +47,37 @@ import {
   runTestConnectionAction,
 } from './src/devices/vacuum.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Config key the device-sharing session (tokens, terminal id...) is persisted
+// under, OUTSIDE config_schema — see the SDK README's oauth2 section this
+// mirrors: "Store the tokens as config keys outside the config_schema: free
+// internal storage, never shown in the UI". Needed so a login survives a
+// container restart without asking the user to scan the QR again.
+const SHARING_SESSION_CONFIG_KEY = 'tuya_sharing_session';
+const QR_LOGIN_ACTION_KEY = 'tuya_qr_login';
+
 const gladys = new GladysIntegration();
+
+const bridge = new PythonBridge({
+  logger,
+  scriptPath: path.join(__dirname, 'bridge', 'tuya_bridge.py'),
+});
+const sharing = new TuyaDeviceSharingClient({ bridge });
+const registry = new TuyaDeviceRegistry({ sharing });
 
 let config = normalizeConfig();
 let cloud = null;
-let registry = null;
 let refreshTimer = null;
 // Tracked separately from `config` (which is wholesale-replaced on every
 // onConfigUpdated/'connected') so a same-credentials refresh never needlessly
 // throws away the registry's cache — only an actual credentials change does.
-let lastCredentials = null;
+let lastCloudCredentials = null;
 
-function credentialsChanged(next) {
+function cloudCredentialsChanged(next) {
   return (
-    lastCredentials?.access_id !== next.access_id ||
-    lastCredentials?.access_secret !== next.access_secret
+    lastCloudCredentials?.access_id !== next.access_id ||
+    lastCloudCredentials?.access_secret !== next.access_secret
   );
 }
 
@@ -75,35 +100,53 @@ function scheduleRefreshTimer() {
   );
 }
 
+/** Re-persist the device-sharing session if its tokens rotated since last saved (see bridge/tuya_bridge.py's _TokenSaver). */
+async function resyncSharingSession() {
+  try {
+    const session = await sharing.getSession();
+    if (session) {
+      await gladys.setConfig({ [SHARING_SESSION_CONFIG_KEY]: JSON.stringify(session) });
+    }
+  } catch (err) {
+    logger.debug(`Could not resync the device-sharing session: ${err.message}`);
+  }
+}
+
 /**
- * Re-fetch every configured device's local_key/DP schema from the Tuya
- * Cloud API + the LAN IP from a UDP broadcast scan, then reconcile: publish
- * discovery (only when `forceDiscovery`, i.e. an explicit scan or a config
- * change — not on every timer tick, matching gladys-hydro-quebec's own
- * distinction) and push the fresh data into already-created devices' local
- * sessions (a rotated key, a changed IP...).
+ * Re-fetch every configured device's local_key/DP schema (from whichever
+ * onboarding method(s) are set up) + the LAN IP from a UDP broadcast scan,
+ * then reconcile: publish discovery (only when `forceDiscovery`, i.e. an
+ * explicit scan or a config change — not on every timer tick, matching
+ * gladys-hydro-quebec's own distinction) and push the fresh data into
+ * already-created devices' local sessions (a rotated key, a changed IP...).
  */
 async function refreshAndReconcile({ forceDiscovery }) {
-  if (!isConfigured(config)) {
+  if (!isCloudConfigured(config) && !isSharingConfigured(config)) {
     await gladys.publishDiscoveredDevices([]);
     await gladys.setConnectionStatus(false, {
-      en: 'Enter your Tuya Cloud API credentials and at least one device id in the Configuration screen.',
-      fr: "Entrez vos identifiants d'API Cloud Tuya et au moins un identifiant d'appareil dans l'écran de configuration.",
+      en: 'Connect your Smart Life account (recommended) or enter your Tuya Cloud API credentials in the Configuration screen.',
+      fr: 'Connectez votre compte Smart Life (recommandé) ou entrez vos identifiants API Cloud Tuya dans l’écran de configuration.',
     });
     return;
   }
 
-  if (!cloud || credentialsChanged(config)) {
-    cloud = new TuyaCloudClient({
-      accessId: config.access_id,
-      accessSecret: config.access_secret,
-      region: config.region,
-    });
-    registry = new TuyaDeviceRegistry(cloud);
+  if (isCloudConfigured(config)) {
+    if (!cloud || cloudCredentialsChanged(config)) {
+      cloud = new TuyaCloudClient({
+        accessId: config.access_id,
+        accessSecret: config.access_secret,
+        region: config.region,
+      });
+      registry.cloud = cloud;
+    }
+    lastCloudCredentials = { access_id: config.access_id, access_secret: config.access_secret };
+  } else {
+    cloud = null;
+    registry.cloud = null;
   }
-  lastCredentials = { access_id: config.access_id, access_secret: config.access_secret };
 
   await registry.refresh(gladys, config.deviceIds);
+  await resyncSharingSession();
 
   if (forceDiscovery) {
     await gladys.publishDiscoveredDevices(buildDiscoveredDevices(gladys, registry));
@@ -115,22 +158,24 @@ async function refreshAndReconcile({ forceDiscovery }) {
     await gladys.setConnectionStatus(true);
   } else {
     await gladys.setConnectionStatus(false, {
-      en: 'Could not reach any configured device through the Tuya Cloud API — check the device id(s), region and credentials.',
-      fr: "Impossible de joindre un appareil configuré via l'API Cloud Tuya — vérifiez le(s) identifiant(s) d'appareil, la région et les identifiants.",
+      en: 'Could not reach any device yet — check your Smart Life connection or Tuya Cloud API credentials.',
+      fr: 'Impossible de joindre un appareil pour le moment — vérifiez la connexion Smart Life ou les identifiants API Cloud Tuya.',
     });
   }
 }
 
 // --- Discovery: Gladys asks for the list of devices --------------------------
 gladys.onScanRequest(async () => {
-  logger.info('onScanRequest -> refreshing from the Tuya Cloud API + a LAN broadcast scan');
+  logger.info(
+    'onScanRequest -> refreshing from every configured Tuya method + a LAN broadcast scan',
+  );
   try {
     await refreshAndReconcile({ forceDiscovery: true });
   } catch (err) {
     logger.error('Discovery failed', err);
     await gladys.setConnectionStatus(false, {
-      en: `Could not reach the Tuya Cloud API: ${err.message}`,
-      fr: `Impossible de joindre l'API Cloud Tuya : ${err.message}`,
+      en: `Discovery failed: ${err.message}`,
+      fr: `Échec de la découverte : ${err.message}`,
     });
   }
 });
@@ -144,16 +189,54 @@ gladys.onSetValue(async (device, feature, value) => {
 // --- Manifest action: test the connection -------------------------------------
 gladys.onAction('test_connection', (fields) => runTestConnectionAction(gladys, { fields }));
 
+// --- "Simple" method: QR / device-sharing login, no developer account --------
+// account_link never redirects back (see the SDK README): this resolves the
+// URL to open (a rendered QR image, see buildQrImageUrl — NOT itself openable
+// as a link, see src/tuya/deviceSharing.js), then watches for the approval
+// itself and reports it through setConnectionStatus(), exactly per contract.
+gladys.onOAuthAuthorizeUrl(async (key) => {
+  if (key !== QR_LOGIN_ACTION_KEY) {
+    throw new Error(`Unknown account_link key "${key}"`);
+  }
+  if (!config.user_code) {
+    throw new Error(
+      'Enter your Smart Life user code first (Me > Settings > Account and Security).',
+    );
+  }
+
+  const { token, content } = await sharing.startQrLogin(config.user_code, config.qr_scheme);
+
+  // Fire-and-forget: the button click only waits for the QR image URL above,
+  // this poll loop runs in the background until the user scans it.
+  waitForQrLogin(sharing.pollQrLogin.bind(sharing), token, config.user_code)
+    .then(async (session) => {
+      logger.info('Smart Life QR login succeeded');
+      await gladys.setConfig({ [SHARING_SESSION_CONFIG_KEY]: JSON.stringify(session) });
+      await refreshAndReconcile({ forceDiscovery: true });
+    })
+    .catch(async (err) => {
+      logger.warn(`Smart Life QR login did not complete: ${err.message}`);
+      await gladys
+        .setConnectionStatus(false, {
+          en: `Smart Life login not completed: ${err.message}`,
+          fr: `Connexion Smart Life non terminée : ${err.message}`,
+        })
+        .catch(() => {});
+    });
+
+  return buildQrImageUrl(content);
+});
+
 // --- Device lifecycle: open/close the local session as devices come and go ---
 gladys.onDeviceCreated(async (device) => {
   const deviceId = deviceIdOf(device);
-  const entry = deviceId ? registry?.get(deviceId) : undefined;
+  const entry = deviceId ? registry.get(deviceId) : undefined;
   if (!entry) {
-    logger.warn(`Device created (${device.external_id}) but no Tuya Cloud data known for it yet`);
+    logger.warn(`Device created (${device.external_id}) but no Tuya data known for it yet`);
     return;
   }
   logger.info(`Device created -> connecting ${device.external_id}`);
-  connectDevice(gladys, device, config, { ...entry, cloud });
+  connectDevice(gladys, device, config, entry);
 });
 
 gladys.onDeviceDeleted(async (device) => {
@@ -170,8 +253,8 @@ gladys.onConfigUpdated(async (newConfig) => {
   } catch (err) {
     logger.error('Refresh after config update failed', err);
     await gladys.setConnectionStatus(false, {
-      en: `Could not reach the Tuya Cloud API: ${err.message}`,
-      fr: `Impossible de joindre l'API Cloud Tuya : ${err.message}`,
+      en: `Refresh failed: ${err.message}`,
+      fr: `Échec du rafraîchissement : ${err.message}`,
     });
   }
   scheduleRefreshTimer();
@@ -181,6 +264,19 @@ gladys.onConfigUpdated(async (newConfig) => {
 gladys.on('connected', async () => {
   try {
     config = normalizeConfig(await gladys.getConfig());
+
+    if (config[SHARING_SESSION_CONFIG_KEY]) {
+      try {
+        const session = JSON.parse(config[SHARING_SESSION_CONFIG_KEY]);
+        await sharing.restoreSession(session);
+        logger.info('Restored the Smart Life device-sharing session');
+      } catch (err) {
+        // Not cleared: could be transient (bridge not ready yet at boot) —
+        // a real re-login is one QR scan away either way.
+        logger.warn(`Could not restore the Smart Life session: ${err.message}`);
+      }
+    }
+
     await refreshAndReconcile({ forceDiscovery: false });
     scheduleRefreshTimer();
   } catch (err) {
@@ -205,6 +301,7 @@ gladys.handleShutdown((signal) => {
   logger.info(`Received ${signal} -> graceful shutdown`);
   stopRefreshTimer();
   disconnectAllDevices();
+  bridge.stop();
 });
 
 // --- Startup -----------------------------------------------------------------
