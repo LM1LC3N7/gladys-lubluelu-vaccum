@@ -6,8 +6,8 @@
     "en": "Control the Lubluelu SL68 and other Tuya/Smart Life robot vacuums over the LAN.",
     "fr": "Contrôlez l'aspirateur Lubluelu SL68 et d'autres robots Tuya en local sur le réseau."
   },
-  "version": "0.1.3",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-lubluelu-vaccum:0.1.3",
+  "version": "0.2.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-lubluelu-vaccum:0.2.0",
   "gladys_version": ">=4.86.1",
   "categories": ["appliances"],
   "transports": ["local", "cloud"],
@@ -67,8 +67,20 @@
       "required": false,
       "default": "smartlife",
       "options": [
-        { "value": "smartlife", "label": { "en": "Smart Life", "fr": "Smart Life" } },
-        { "value": "tuyaSmart", "label": { "en": "Tuya Smart", "fr": "Tuya Smart" } }
+        {
+          "value": "smartlife",
+          "label": {
+            "en": "Smart Life",
+            "fr": "Smart Life"
+          }
+        },
+        {
+          "value": "tuyaSmart",
+          "label": {
+            "en": "Tuya Smart",
+            "fr": "Tuya Smart"
+          }
+        }
       ]
     },
     {
