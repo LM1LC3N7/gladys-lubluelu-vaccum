@@ -154,6 +154,41 @@ wasn't worth it. Dev-only dependencies (never shipped in the Docker image): `esl
 Testing uses no library: `npm test` runs Node's own `node --test` — `bridge/tuya_bridge.py`'s
 protocol is tested against a plain-Node fixture standing in for it
 (`test-fixtures/echoBridge.js`), not a real Python process, so `npm test` needs no Python at all.
+See "Keeping dependencies current" below for how all of the above stay up to date on their own.
+
+## Keeping dependencies current (CI/CD)
+
+Four independent [Dependabot](https://docs.github.com/en/code-security/dependabot) watchers
+(`.github/dependabot.yml`), one per place this repo pins a version, each opening its own PR when a
+newer version exists:
+
+| Ecosystem        | Watches                   | Covers                                                                                                                                        |
+| ---------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pip`            | `bridge/requirements.txt` | `tuya-device-sharing-sdk` and its own deps (`cryptography`, `requests`, `paho-mqtt`) — the piece that changes when Tuya ships an SDK release. |
+| `npm`            | `package.json`            | `@gladysassistant/integration-sdk`, `tuyapi`, and the dev tooling (eslint/prettier).                                                          |
+| `docker`         | `Dockerfile`              | The `node:22-alpine` base image.                                                                                                              |
+| `github-actions` | `.github/workflows/*.yml` | The actions the workflows themselves use (`actions/checkout`, `docker/build-push-action`...).                                                 |
+
+Every PR Dependabot opens — on any of the four — runs the full `ci.yml` suite already described
+above (lint, `node --test`, and, when it's the `pip` PR, the `python-bridge` job): a bumped
+`tuya-device-sharing-sdk` gets installed for real and `bridge/tuya_bridge.py` imported against it,
+so an SDK release that renames or removes `LoginControl`/`Manager`/`SharingTokenListener` — or a
+`status_range`/`local_strategy` shape `_serialize_device` relies on — fails CI on the PR itself,
+long before it would otherwise only surface against a real vacuum.
+
+**Auto-merge, `pip`-only, patch-only**: `.github/workflows/dependabot-auto-merge.yml` enables
+GitHub's native auto-merge on a Dependabot PR the moment it's opened, but _only_ when it's a `pip`
+PR **and** a patch-level bump (e.g. `0.2.15` -> `0.2.16`). GitHub then still waits for every
+required check — including `python-bridge` above — before actually merging; a failing check just
+means the PR sits there, auto-merge armed but never firing. Minor and major bumps (and every
+npm/docker/github-actions PR, regardless of level) are left for a human to merge by hand, same as
+before this workflow existed — `tuya-device-sharing-sdk` is still pre-1.0 (`0.x`), so under semver
+rules a MINOR release is allowed to break its API, which the `python-bridge` job's import check
+can catch existing usages breaking but can't rule out for behavior it doesn't exercise.
+
+This needs **"Allow auto-merge"** turned on once under the repository's Settings -> General — a
+setting no workflow file can flip on its own; without it, `dependabot-auto-merge.yml`'s `gh pr
+merge --auto` step fails harmlessly and the PR just waits for manual review like any other.
 
 ## Project structure
 
