@@ -2,13 +2,31 @@
 # Dependabot version updates.
 #
 # Opens a PR by itself when a newer version of a dependency is available, for
-# the three places this repo pins versions: npm packages, the Dockerfile base
+# the four places this repo pins versions: npm packages, the Python bridge's
+# requirements.txt (bridge/tuya_bridge.py's only dependency surface, most
+# importantly the official `tuya-device-sharing-sdk`), the Dockerfile base
 # image, and the GitHub Actions used by the workflows. Regression checking is
-# the existing CI workflow (.github/workflows/ci.yml), which already runs on
-# every pull_request with no extra setup needed here.
+# the existing CI workflow (.github/workflows/ci.yml) — its "Python bridge"
+# job installs the bumped requirements.txt for real and imports
+# bridge/tuya_bridge.py against it, so a Tuya SDK release that renames/removes
+# something this bridge relies on fails CI on the PR itself instead of only
+# being discovered at runtime. .github/workflows/dependabot-auto-merge.yml
+# then merges a pip PATCH bump on its own once that CI run is green (see that
+# workflow's header for exactly what it does and does not auto-merge).
 # -----------------------------------------------------------------------------
 version: 2
 updates:
+  - package-ecosystem: 'pip'
+    directory: '/bridge'
+    schedule:
+      interval: 'weekly'
+    labels:
+      - 'dependencies'
+      - 'python-bridge'
+    commit-message:
+      prefix: 'chore'
+      include: 'scope'
+
   - package-ecosystem: 'npm'
     directory: '/'
     schedule:
