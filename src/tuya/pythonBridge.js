@@ -41,7 +41,7 @@ export class PythonBridge {
     createInterface({ input: child.stdout }).on('line', (line) => this._handleLine(line));
 
     createInterface({ input: child.stderr }).on('line', (line) => {
-      if (line.trim()) this.logger.debug(`[bridge] ${line}`);
+      if (line.trim()) this._logBridgeLine(line);
     });
 
     child.on('error', (err) => {
@@ -55,6 +55,30 @@ export class PythonBridge {
       this.pending.clear();
       if (this.process === child) this.process = null;
     });
+  }
+
+  /**
+   * Forward one line of the bridge's own stderr logging at a matching Node
+   * log level instead of blanket-hiding it behind `debug` — bridge/tuya_bridge.py
+   * already filters by its own LOG_LEVEL (inherited from this process' env,
+   * default INFO) before ever writing a line, so re-hiding everything behind
+   * Node's separate `debug` threshold silently dropped real bridge errors
+   * (a failed QR login, a bad Tuya response...) unless LOG_LEVEL=debug was
+   * ALSO set on the Node side - which most Gladys installs have no way to do.
+   * Line format is Python's `%(asctime)s %(name)s %(levelname)s %(message)s`;
+   * a level word not found (e.g. a wrapped traceback continuation line) is
+   * still surfaced, at `info`, rather than silently dropped.
+   */
+  _logBridgeLine(line) {
+    const match = line.match(/\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b/);
+    const level = {
+      DEBUG: 'debug',
+      INFO: 'info',
+      WARNING: 'warn',
+      ERROR: 'error',
+      CRITICAL: 'error',
+    }[match?.[1]];
+    this.logger[level || 'info'](`[bridge] ${line}`);
   }
 
   _handleLine(line) {

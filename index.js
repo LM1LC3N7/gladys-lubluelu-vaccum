@@ -195,6 +195,7 @@ gladys.onAction('test_connection', (fields) => runTestConnectionAction(gladys, {
 // as a link, see src/tuya/deviceSharing.js), then watches for the approval
 // itself and reports it through setConnectionStatus(), exactly per contract.
 gladys.onOAuthAuthorizeUrl(async (key) => {
+  logger.info(`onOAuthAuthorizeUrl <- key="${key}"`);
   if (key !== QR_LOGIN_ACTION_KEY) {
     throw new Error(`Unknown account_link key "${key}"`);
   }
@@ -205,13 +206,24 @@ gladys.onOAuthAuthorizeUrl(async (key) => {
   // has caught up with a user_code the user just saved — which surfaced as
   // this exact check rejecting a correct, freshly-saved code.
   config = normalizeConfig(await gladys.getConfig());
+  logger.info(
+    `onOAuthAuthorizeUrl: user_code is ${config.user_code ? `set (${config.user_code.length} chars)` : 'EMPTY'}, qr_scheme="${config.qr_scheme}"`,
+  );
   if (!config.user_code) {
     throw new Error(
       'Enter your Smart Life user code first (Me > Settings > Account and Security).',
     );
   }
 
-  const { token, content } = await sharing.startQrLogin(config.user_code, config.qr_scheme);
+  let token;
+  let content;
+  try {
+    ({ token, content } = await sharing.startQrLogin(config.user_code, config.qr_scheme));
+  } catch (err) {
+    logger.error(`onOAuthAuthorizeUrl: startQrLogin failed: ${err.message}`, err);
+    throw err;
+  }
+  logger.info(`onOAuthAuthorizeUrl: QR minted (token length=${token.length}) -> polling for login`);
 
   // Fire-and-forget: the button click only waits for the QR image URL above,
   // this poll loop runs in the background until the user scans it.
