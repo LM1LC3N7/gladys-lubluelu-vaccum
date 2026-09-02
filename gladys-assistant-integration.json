@@ -27,8 +27,8 @@
         "fr": "Compte Smart Life (simple, recommandé)"
       },
       "description": {
-        "en": "No Tuya developer account needed. Enter your Smart Life user code below, click Connect, then scan the QR code with the Smart Life/Tuya Smart app already used for the vacuum and tap \"Confirm login\" — every device on your account is then discovered automatically, exactly like adding a device in the official app. The user code is in the app under Me > Settings > Account and Security > User Code.",
-        "fr": "Aucun compte développeur Tuya nécessaire. Entrez votre code utilisateur Smart Life ci-dessous, cliquez sur Connecter, puis scannez le QR code avec l'application Smart Life/Tuya Smart déjà utilisée pour l'aspirateur et validez « Confirmer la connexion » — tous les appareils de votre compte sont ensuite découverts automatiquement, exactement comme dans l'application officielle. Le code utilisateur se trouve dans l'app sous Moi > Paramètres > Compte et sécurité > Code utilisateur."
+        "en": "No Tuya developer account needed. 1) Enter your Smart Life user code below and save. 2) Click Connect and scan the QR code with the Smart Life/Tuya Smart app. 3) Tap \"Confirm login\" in the app — every device on your account is then discovered automatically. User code: Me > Settings > Account and Security > User Code.",
+        "fr": "Aucun compte développeur Tuya nécessaire. 1) Entrez votre code utilisateur Smart Life ci-dessous et enregistrez. 2) Cliquez sur Connecter et scannez le QR code avec l'application Smart Life/Tuya Smart. 3) Validez « Confirmer la connexion » dans l'app — tous vos appareils sont alors découverts automatiquement. Code utilisateur : Moi > Paramètres > Compte et sécurité > Code utilisateur."
       }
     },
     {
