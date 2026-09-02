@@ -198,6 +198,13 @@ gladys.onOAuthAuthorizeUrl(async (key) => {
   if (key !== QR_LOGIN_ACTION_KEY) {
     throw new Error(`Unknown account_link key "${key}"`);
   }
+
+  // Re-fetch rather than trust the module-level `config`: Gladys saves the
+  // form and requests this authorize URL as two separate calls, and a Connect
+  // click can reach this handler before this process's own onConfigUpdated
+  // has caught up with a user_code the user just saved — which surfaced as
+  // this exact check rejecting a correct, freshly-saved code.
+  config = normalizeConfig(await gladys.getConfig());
   if (!config.user_code) {
     throw new Error(
       'Enter your Smart Life user code first (Me > Settings > Account and Security).',
