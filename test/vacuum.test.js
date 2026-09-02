@@ -5,6 +5,7 @@ import {
   buildDiscoveredDevice,
   deviceIdOf,
   onSetValue,
+  resolveDeviceIp,
   runTestConnectionAction,
   __setConnectionForTesting,
   __clearConnectionsForTesting,
@@ -78,6 +79,31 @@ test('buildDiscoveredDevice sets the TUYA_DEVICE_ID param and, when known, IP_AD
   const withoutIp = buildDiscoveredDevice(gladys, { deviceId: 'eb222', dpsByCode });
   assert.deepEqual(withoutIp.params, [{ name: 'TUYA_DEVICE_ID', value: 'eb222' }]);
   assert.equal(withoutIp.name, 'Tuya vacuum (eb222)');
+});
+
+test('resolveDeviceIp prefers the manual override over a stale IP_ADDRESS param baked in at discovery', () => {
+  // The device was created back when the registry (wrongly) reported a
+  // non-LAN address; the user has since filled in the manual override to
+  // fix it. IP_ADDRESS is frozen from discovery and never updated, so it
+  // must not be allowed to shadow the fix.
+  const device = { params: [{ name: 'IP_ADDRESS', value: '203.0.113.9' }] };
+  const config = { deviceIps: { eb111: '192.168.1.42' } };
+  const registryEntry = { deviceId: 'eb111', ip: undefined };
+  assert.equal(resolveDeviceIp(device, config, registryEntry), '192.168.1.42');
+});
+
+test('resolveDeviceIp prefers the registry entry over the stale IP_ADDRESS param when no manual override is set', () => {
+  const device = { params: [{ name: 'IP_ADDRESS', value: '203.0.113.9' }] };
+  const config = { deviceIps: {} };
+  const registryEntry = { deviceId: 'eb111', ip: '192.168.1.99' };
+  assert.equal(resolveDeviceIp(device, config, registryEntry), '192.168.1.99');
+});
+
+test('resolveDeviceIp falls back to the IP_ADDRESS param when neither the override nor the registry know one', () => {
+  const device = { params: [{ name: 'IP_ADDRESS', value: '192.168.1.7' }] };
+  const config = { deviceIps: {} };
+  const registryEntry = { deviceId: 'eb111', ip: undefined };
+  assert.equal(resolveDeviceIp(device, config, registryEntry), '192.168.1.7');
 });
 
 test('onSetValue sends locally when connected and preferred', async (t) => {

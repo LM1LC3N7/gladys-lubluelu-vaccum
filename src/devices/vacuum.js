@@ -143,6 +143,20 @@ async function publishTransport(gladys, externalId, transport, extra = {}) {
 }
 
 /**
+ * Which LAN IP to use for one device's local session — manual override
+ * first, then the registry's current data (refreshed every cycle), and only
+ * then the Gladys device's own `IP_ADDRESS` param as a last resort. NOT that
+ * param first: it's a snapshot frozen at discovery time
+ * (buildDiscoveredDevice() sets it once, never updated afterwards), so
+ * putting it first would let a bad IP baked in at discovery (e.g. a non-LAN
+ * address device sharing briefly reported) permanently shadow both a
+ * corrected registry value AND the manual escape hatch this field exists for.
+ */
+export function resolveDeviceIp(device, config, registryEntry) {
+  return config.deviceIps[registryEntry.deviceId] || registryEntry.ip || ipAddressOf(device);
+}
+
+/**
  * Open (or reuse) the local session for one Gladys-created vacuum device.
  * Idempotent — a second call with the same registry entry is a no-op, a
  * call with an UPDATED local_key/ip re-applies it in place (see
@@ -157,7 +171,7 @@ async function publishTransport(gladys, externalId, transport, extra = {}) {
  */
 export function connectDevice(gladys, device, config, registryEntry) {
   const existing = connections.get(device.external_id);
-  const ip = ipAddressOf(device) || config.deviceIps[registryEntry.deviceId] || registryEntry.ip;
+  const ip = resolveDeviceIp(device, config, registryEntry);
 
   if (existing) {
     // Structure didn't change (dpsByCode is only re-applied on a fresh

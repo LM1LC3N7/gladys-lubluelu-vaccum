@@ -25,6 +25,34 @@ import { buildDiscoveredDevice, connectDevice, deviceIdOf } from './vacuum.js';
 const logger = createLogger({ name: 'discovery' });
 
 /**
+ * Whether `ip` is a private IPv4 address (RFC1918 + loopback + link-local).
+ * Tuya's device-sharing API's own `device.ip` field has been observed to
+ * report the device's WAN-facing address (as seen by Tuya's servers, since
+ * the vacuum reaches the cloud through the same router as everything else on
+ * the LAN) rather than a real LAN address — trusting it as a local_key-style
+ * fallback for local control then means `tuya-local`'s TCP client hammers a
+ * public IP forever with "connection timed out", never actually reaching the
+ * device. Only the UDP broadcast scan (a real LAN packet) or an explicit
+ * manual `device_ips` override are trustworthy local IPs; this rejects
+ * anything else so the caller falls back to "no LAN IP known yet" instead.
+ */
+function isPrivateIPv4(ip) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(ip ?? '');
+  if (!match) {
+    return false;
+  }
+  const a = Number(match[1]);
+  const b = Number(match[2]);
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+  );
+}
+
+/**
  * Caches what each configured onboarding method + the UDP broadcast scan know
  * about every device, and refresh()es it on demand — the entry point
  * (index.js) calls refresh() at startup, on every config change, on Discovery
@@ -88,9 +116,14 @@ export class TuyaDeviceRegistry {
     for (const device of devices) {
       const entry = toRegistryEntry(device);
       const announcement = ipByGwId.get(entry.deviceId);
+      if (entry.ip && !announcement && !isPrivateIPv4(entry.ip)) {
+        logger.debug(
+          `Ignoring non-LAN IP reported by device sharing for ${entry.deviceId}: ${entry.ip}`,
+        );
+      }
       this.devices.set(entry.deviceId, {
         ...entry,
-        ip: announcement?.ip || entry.ip,
+        ip: announcement?.ip || (isPrivateIPv4(entry.ip) ? entry.ip : undefined),
         version: announcement?.version,
         cloud: this.sharing,
         source: 'sharing',
