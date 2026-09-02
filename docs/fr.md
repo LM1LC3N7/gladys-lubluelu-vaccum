@@ -53,12 +53,15 @@ signale réellement (tous les aspirateurs n'ont pas toutes ces fonctions) :
 
 ## Configuration — Compte Smart Life (recommandé)
 
-1. Ouvrez l'application sur votre téléphone, allez dans **Moi > Paramètres > Compte et
-   sécurité > Code utilisateur**, et copiez-le.
-2. Dans l'écran de configuration de cette intégration, collez-le dans **Code utilisateur Smart
-   Life**, enregistrez, puis cliquez sur **Connecter votre compte Smart Life**. Un QR code
-   s'ouvre.
-3. Dans l'application Smart Life/Tuya Smart, appuyez sur **+ > Scanner**, visez le QR code, puis
+L'écran de configuration de cette intégration suit ces étapes de haut en bas, numérotées :
+
+1. **1. Compte Smart Life** : ouvrez l'application sur votre téléphone, allez dans **Moi >
+   Paramètres > Compte et sécurité > Code utilisateur**, copiez-le, puis collez-le dans le champ
+   **Code utilisateur Smart Life**.
+2. **2. Enregistrez** : cliquez sur Enregistrer avant de continuer — l'étape suivante a besoin
+   que ce code soit déjà enregistré, sinon elle échoue avec une erreur.
+3. **3. Connecter et scanner le QR code** : cliquez sur ce bouton, un QR code s'ouvre. Dans
+   l'application Smart Life/Tuya Smart, appuyez sur **+ > Scanner**, visez le QR code, puis
    validez **Confirmer la connexion**. L'application peut indiquer que la connexion est pour
    « Home Assistant » — c'est normal, cette intégration utilise le même mécanisme officiel Tuya
    que l'intégration Home Assistant ; ne confirmez que si vous venez de lancer cette connexion
@@ -110,6 +113,11 @@ intégration peut contourner.
 
 ## Dépannage
 
+- **« Entrez d'abord votre code utilisateur Smart Life » alors qu'il est bien rempli** : le
+  formulaire n'a pas été **enregistré** avant de cliquer sur le bouton de connexion — ce sont deux
+  actions séparées. Cliquez sur Enregistrer, attendez la confirmation, puis cliquez sur **3.
+  Connecter et scanner le QR code**. Si l'erreur persiste, vérifiez les logs de l'intégration
+  (`docker logs`) : depuis la version 0.2.2, une tentative échouée y affiche le détail exact.
 - **Le QR code n'est pas confirmé / expire** : il expire en 1-2 minutes — rouvrez-le (cliquez à
   nouveau sur Connecter) et scannez rapidement. Si l'application ne le reconnaît pas comme
   valide, essayez de changer **Application du QR (avancé)** entre Smart Life et Tuya Smart dans
