@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { MessageParser } from 'tuyapi/lib/message-parser.js';
+import { UDP_KEY } from 'tuyapi/lib/config.js';
 import { TuyaDeviceRegistry } from '../src/devices/index.js';
 import { createFakeGladys } from '../test-fixtures/fakeGladys.js';
+
+/** Same real-encoder pattern as test/udpDiscovery.test.js. */
+function fakeAnnouncement(payload, version = '3.3') {
+  const parser = new MessageParser({ key: UDP_KEY, version });
+  const buffer = parser.encode({ data: payload, commandByte: 0, sequenceN: 1 });
+  return { source_ip: payload.ip, source_port: 6667, payload_base64: buffer.toString('base64') };
+}
 
 function fakeSharing(devicesOrError) {
   return {
@@ -51,6 +60,34 @@ test('refresh() populates entries from the sharing client, source-tagged', async
   assert.equal(entry.localKey, 'key-1');
   assert.equal(entry.ip, '192.168.1.1');
   assert.ok(entry.dpsByCode.has('switch_status'));
+});
+
+test('refresh() ignores a non-LAN IP reported by device sharing when no UDP announcement confirms it', async () => {
+  // Device sharing has been observed reporting a device's WAN-facing IP (as
+  // seen by Tuya's own servers) rather than a real LAN address — trusting it
+  // would make the local TCP client hammer a public IP forever instead of
+  // cleanly falling back to "no LAN IP known yet".
+  const gladys = createFakeGladys();
+  const registry = new TuyaDeviceRegistry({
+    sharing: fakeSharing([sharingDevice('1', { ip: '203.0.113.9' })]),
+  });
+
+  await registry.refresh(gladys, []);
+
+  assert.equal(registry.get('1').ip, undefined);
+});
+
+test('refresh() still uses the UDP-confirmed IP even when device sharing also reports a non-LAN one', async () => {
+  const gladys = createFakeGladys({
+    scanNetworkResult: [fakeAnnouncement({ ip: '192.168.1.50', gwId: '1', version: '3.3' })],
+  });
+  const registry = new TuyaDeviceRegistry({
+    sharing: fakeSharing([sharingDevice('1', { ip: '203.0.113.9' })]),
+  });
+
+  await registry.refresh(gladys, []);
+
+  assert.equal(registry.get('1').ip, '192.168.1.50');
 });
 
 test('refresh() prunes a sharing-sourced device no longer returned by discoverDevices()', async () => {
