@@ -23,12 +23,12 @@
       "key": "intro_simple",
       "type": "section",
       "label": {
-        "en": "Smart Life account (simple, recommended)",
-        "fr": "Compte Smart Life (simple, recommandé)"
+        "en": "1. Smart Life account (simple, recommended)",
+        "fr": "1. Compte Smart Life (simple, recommandé)"
       },
       "description": {
-        "en": "No Tuya developer account needed. 1) Enter your Smart Life user code below and save. 2) Click Connect and scan the QR code with the Smart Life/Tuya Smart app. 3) Tap \"Confirm login\" in the app — every device on your account is then discovered automatically. User code: Me > Settings > Account and Security > User Code.",
-        "fr": "Aucun compte développeur Tuya nécessaire. 1) Entrez votre code utilisateur Smart Life ci-dessous et enregistrez. 2) Cliquez sur Connecter et scannez le QR code avec l'application Smart Life/Tuya Smart. 3) Validez « Confirmer la connexion » dans l'app — tous vos appareils sont alors découverts automatiquement. Code utilisateur : Moi > Paramètres > Compte et sécurité > Code utilisateur."
+        "en": "No Tuya developer account needed. Enter your Smart Life user code below — Me > Settings > Account and Security > User Code in the app.",
+        "fr": "Aucun compte développeur Tuya nécessaire. Entrez votre code utilisateur Smart Life ci-dessous — Moi > Paramètres > Compte et sécurité > Code utilisateur dans l'app."
       }
     },
     {
@@ -42,15 +42,27 @@
       "default": ""
     },
     {
+      "key": "save_reminder_simple",
+      "type": "section",
+      "label": {
+        "en": "2. Save",
+        "fr": "2. Enregistrez"
+      },
+      "description": {
+        "en": "Click Save now, before continuing — step 3 below needs the user code you just entered to already be saved, or it will fail.",
+        "fr": "Cliquez sur Enregistrer maintenant, avant de continuer — l'étape 3 ci-dessous a besoin que le code utilisateur que vous venez d'entrer soit déjà enregistré, sinon elle échouera."
+      }
+    },
+    {
       "key": "tuya_qr_login",
       "type": "account_link",
       "label": {
-        "en": "Connect your Smart Life account",
-        "fr": "Connecter votre compte Smart Life"
+        "en": "3. Connect and scan the QR code",
+        "fr": "3. Connecter et scanner le QR code"
       },
       "description": {
-        "en": "Opens a QR code — scan it with the Smart Life/Tuya Smart app and confirm. Requires the user code above.",
-        "fr": "Ouvre un QR code — scannez-le avec l'application Smart Life/Tuya Smart et confirmez. Nécessite le code utilisateur ci-dessus."
+        "en": "Opens a QR code — scan it with the Smart Life/Tuya Smart app and tap \"Confirm login\". Every device on your account is then discovered automatically.",
+        "fr": "Ouvre un QR code — scannez-le avec l'application Smart Life/Tuya Smart et validez « Confirmer la connexion ». Tous les appareils de votre compte sont alors découverts automatiquement."
       }
     },
     {
@@ -87,8 +99,8 @@
       "key": "intro",
       "type": "section",
       "label": {
-        "en": "Tuya Cloud account (advanced, optional)",
-        "fr": "Compte Tuya Cloud (avancé, optionnel)"
+        "en": "Alternative: Tuya Cloud account (advanced, optional)",
+        "fr": "Alternative : Compte Tuya Cloud (avancé, optionnel)"
       },
       "description": {
         "en": "This vacuum is controlled directly over your LAN once configured — no cloud round-trip for day-to-day commands. But the device's local_key (and its rotation over time) only ever lives behind the Tuya Cloud account your Smart Life/Tuya Smart app uses, so a free Tuya IoT Platform project is required once: create a Cloud project, link your Smart Life/Tuya Smart app account to it (Devices tab -> Link Tuya App Account, scan the QR code with the app), then copy the project's Access ID/Client ID and Access Secret/Client Secret below, and the vacuum's Device ID from the All Devices list.",

@@ -49,14 +49,17 @@ These features show up per vacuum, automatically adapted to what your specific d
 
 ## Configuration — Smart Life account (recommended)
 
-1. Open the app on your phone, go to **Me > Settings > Account and Security > User Code**, and
-   copy it.
-2. In this integration's Configuration screen, paste it into **Smart Life user code**, save, then
-   click **Connect your Smart Life account**. A QR code opens.
-3. In the Smart Life/Tuya Smart app, tap **+ > Scan**, point at the QR code, and tap **Confirm
-   login**. The app may say the login is for "Home Assistant" — that's expected, this integration
-   uses the same official Tuya mechanism Home Assistant's own integration does; only confirm if
-   you just started this login yourself.
+This integration's Configuration screen follows these steps top to bottom, numbered:
+
+1. **1. Smart Life account**: open the app on your phone, go to **Me > Settings > Account and
+   Security > User Code**, copy it, then paste it into the **Smart Life user code** field.
+2. **2. Save**: click Save before continuing — the next step needs this code to already be
+   saved, or it fails with an error.
+3. **3. Connect and scan the QR code**: click this button, a QR code opens. In the Smart
+   Life/Tuya Smart app, tap **+ > Scan**, point at the QR code, and tap **Confirm login**. The
+   app may say the login is for "Home Assistant" — that's expected, this integration uses the
+   same official Tuya mechanism Home Assistant's own integration does; only confirm if you just
+   started this login yourself.
 4. Open the **Discovery** tab and run a scan — every device on the account appears automatically,
    with the features each one actually supports. Add the ones you want.
 
@@ -102,6 +105,11 @@ firmware, not something this integration can work around.
 
 ## Troubleshooting
 
+- **"Enter your Smart Life user code first" even though it's filled in**: the form wasn't
+  **saved** before clicking the connect button — those are two separate actions. Click Save, wait
+  for the confirmation, then click **3. Connect and scan the QR code**. If the error persists,
+  check the integration logs (`docker logs`): starting with 0.2.2, a failed attempt shows the
+  exact detail there.
 - **The QR code isn't confirmed / times out**: it expires in 1-2 minutes — reopen it (click
   Connect again) and scan promptly. If the app doesn't recognize it as valid, try switching
   **QR app (advanced)** between Smart Life and Tuya Smart in the Configuration screen and
