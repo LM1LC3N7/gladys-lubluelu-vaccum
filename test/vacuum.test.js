@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildFeatures,
   buildDiscoveredDevice,
+  connectDevice,
   deviceIdOf,
   onSetValue,
   resolveDeviceIp,
@@ -155,6 +156,43 @@ test('onSetValue falls back to the cloud when the local session is down', async 
   assert.deepEqual(cloudCalls, [{ id: 'eb111', code: 'switch_status', value: true }]);
   assert.equal(local.setCalls.length, 0);
   assert.ok(gladys.transports.some((t2) => t2.transport === 'cloud' && t2.degraded === true));
+});
+
+test('connectDevice registers a cloud-only entry (instead of nothing at all) when no LAN IP is known yet', async (t) => {
+  // Regression: connectDevice() used to bail out entirely when no IP was
+  // known (UDP broadcast + manual override both empty), so onSetValue()
+  // later found no connection entry at all and threw "not connected" —
+  // never even attempting the Tuya Cloud fallback this architecture
+  // otherwise promises. A device found only through device sharing, on a
+  // network where broadcast discovery never works, hit this on every
+  // single command.
+  t.after(() => __clearConnectionsForTesting());
+  const gladys = createFakeGladys();
+  const dpsByCode = indexDpsByCode(FULL_SPEC);
+  const cloudCalls = [];
+  const registryEntry = {
+    deviceId: 'eb111',
+    localKey: 'key-1',
+    ip: undefined,
+    dpsByCode,
+    cloud: { sendCommand: async (id, code, value) => cloudCalls.push({ id, code, value }) },
+  };
+
+  connectDevice(
+    gladys,
+    { external_id: 'vacuum:eb111', params: [] },
+    { deviceIps: {} },
+    registryEntry,
+  );
+
+  await onSetValue(gladys, {
+    device: { external_id: 'vacuum:eb111' },
+    feature: { external_id: 'vacuum:eb111:power' },
+    value: true,
+    config: {},
+  });
+
+  assert.deepEqual(cloudCalls, [{ id: 'eb111', code: 'switch_status', value: true }]);
 });
 
 test('onSetValue respects GLADYS_PREFER_LOCAL: false and goes straight to the cloud', async (t) => {
