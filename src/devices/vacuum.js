@@ -46,6 +46,23 @@ const logger = createLogger({ name: DEVICE_TYPE });
 // }
 const connections = new Map();
 
+// Stands in for `entry.local` while no LAN IP is known yet (UDP broadcast
+// found nothing, no manual override): always "disconnected", so onSetValue's
+// preferLocal-then-cloud logic falls straight through to the Tuya Cloud
+// command instead of connectDevice() skipping this device's connection
+// entry entirely — which used to leave onSetValue() with nothing in
+// `connections` at all, throwing "not connected" and never even trying the
+// cloud fallback the rest of this architecture promises. Stateless (no `ip`
+// to react to), so one shared instance is enough.
+const NO_IP_LOCAL_CLIENT = {
+  isConnected: () => false,
+  async set() {
+    return false;
+  },
+  updateKey() {},
+  stop() {},
+};
+
 export function featureExternalId(deviceExternalId, key) {
   return `${deviceExternalId}:${key}`;
 }
@@ -188,13 +205,6 @@ export function connectDevice(gladys, device, config, registryEntry) {
     }
   }
 
-  if (!ip) {
-    logger.warn(
-      `No LAN IP known for ${device.external_id} yet (UDP broadcast + manual override both empty)`,
-    );
-    return;
-  }
-
   const { dpIdToFeatureKey, featureKeyToDp, dockValue, modeDpId } = buildFeatures(
     device.external_id,
     registryEntry.dpsByCode,
@@ -211,6 +221,21 @@ export function connectDevice(gladys, device, config, registryEntry) {
     modeDpId,
     lastKnownState: new Map(),
   };
+
+  if (!ip) {
+    // No LAN IP known yet (UDP broadcast + manual override both empty): still
+    // register the connection entry — with a no-op `local` — so onSetValue()
+    // and runTestConnectionAction() find it and use the Tuya Cloud command
+    // fallback instead of throwing "not connected". connectDevice() runs
+    // again (see src/devices/index.js's periodic refresh) once an IP becomes
+    // known, upgrading this to a real local session then.
+    logger.warn(
+      `No LAN IP known for ${device.external_id} yet (UDP broadcast + manual override both empty) — cloud-only for now`,
+    );
+    entry.local = NO_IP_LOCAL_CLIENT;
+    connections.set(device.external_id, entry);
+    return;
+  }
 
   entry.local = createTuyaLocalClient({
     id: registryEntry.deviceId,
