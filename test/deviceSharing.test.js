@@ -34,6 +34,7 @@ test('TuyaDeviceSharingClient methods map to the right bridge command + params',
     get_session: () => ({ terminal_id: 'x' }),
     discover: () => [],
     send_command: () => ({ success: true }),
+    get_status: () => [{ code: 'switch_status', value: true }],
     logout: () => ({ success: true }),
   });
   const client = new TuyaDeviceSharingClient({ bridge });
@@ -68,8 +69,12 @@ test('TuyaDeviceSharingClient methods map to the right bridge command + params',
     params: { device_id: 'dev1', code: 'switch_status', value: true },
   });
 
+  const status = await client.getStatus('dev1');
+  assert.deepEqual(bridge.calls[6], { cmd: 'get_status', params: { device_id: 'dev1' } });
+  assert.deepEqual(status, [{ code: 'switch_status', value: true }]);
+
   await client.logout();
-  assert.deepEqual(bridge.calls[6], { cmd: 'logout', params: {} });
+  assert.deepEqual(bridge.calls[7], { cmd: 'logout', params: {} });
 });
 
 test('waitForQrLogin resolves with the session as soon as polling reports success', async () => {

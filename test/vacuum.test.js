@@ -5,6 +5,8 @@ import {
   buildDiscoveredDevice,
   connectDevice,
   deviceIdOf,
+  formatIncomingValue,
+  formatOutgoingValue,
   onSetValue,
   resolveDeviceIp,
   runTestConnectionAction,
@@ -289,8 +291,111 @@ test('runTestConnectionAction reports the last known local state', async (t) => 
   assert.match(result.en, /battery=80/);
 });
 
-test('runTestConnectionAction reports "not connected yet" for an unknown device', async () => {
+test('runTestConnectionAction throws (so the button shows red) for an unknown device', async () => {
   const gladys = createFakeGladys();
-  const result = await runTestConnectionAction(gladys, { fields: { device: 'vacuum:unknown' } });
-  assert.match(result.en, /not been connected/);
+  await assert.rejects(
+    () => runTestConnectionAction(gladys, { fields: { device: 'vacuum:unknown' } }),
+    /not been connected/,
+  );
+});
+
+test('runTestConnectionAction throws (instead of resolving with a "not reachable" message) when local is down and the cloud fallback also fails', async (t) => {
+  // Resolving always acks the action as a *success* regardless of what the
+  // message says (see the SDK's onAction doc: "throwing displays the error
+  // message instead") — this used to show a green "Not reachable locally
+  // nor via the Tuya Cloud API: ..." result in the Configuration screen.
+  t.after(() => __clearConnectionsForTesting());
+  const gladys = createFakeGladys();
+  __setConnectionForTesting('vacuum:eb111', {
+    deviceId: 'eb111',
+    ip: '192.168.1.42',
+    local: fakeLocalClient({ connected: false }),
+    cloud: {
+      getStatus: async () => {
+        throw new Error('entry.cloud.getStatus is not a function');
+      },
+    },
+    lastKnownState: new Map(),
+  });
+
+  await assert.rejects(
+    () => runTestConnectionAction(gladys, { fields: { device: 'vacuum:eb111' } }),
+    /Not reachable locally nor via the Tuya Cloud API/,
+  );
+});
+
+test('formatIncomingValue wraps Enum/String DPs as { text } and converts Boolean DPs to a number, for gladys.publishState', () => {
+  // gladys.publishState() only accepts a number, or an object with a `text`
+  // key — an unwrapped string (what a raw Enum/String DP decodes to) or a
+  // JS boolean (what a raw Boolean DP decodes to) both fail with
+  // "states[0]: must have a numeric state or a string text".
+  assert.deepEqual(formatIncomingValue('Enum', 'smart'), { text: 'smart' });
+  assert.deepEqual(formatIncomingValue('String', 'foo'), { text: 'foo' });
+  assert.equal(formatIncomingValue('Boolean', true), 1);
+  assert.equal(formatIncomingValue('Boolean', false), 0);
+  assert.equal(formatIncomingValue('Value', 42), 42);
+  assert.equal(formatIncomingValue('Integer', 7), 7);
+  assert.equal(formatIncomingValue(undefined, 5), 5);
+});
+
+test('formatOutgoingValue converts a Boolean DP command value to a real JSON boolean, and coerces Value/Integer DPs to a number', () => {
+  // Gladys sends a switch command's value as a number (0/1); Tuya's local
+  // and cloud APIs expect an actual boolean for a Boolean-typed DP —
+  // sending the number as-is made the device silently ignore the command.
+  assert.equal(formatOutgoingValue('Boolean', 0), false);
+  assert.equal(formatOutgoingValue('Boolean', 1), true);
+  assert.equal(formatOutgoingValue('Boolean', true), true);
+  assert.equal(formatOutgoingValue('Value', '42'), 42);
+  assert.equal(formatOutgoingValue('Integer', 7), 7);
+  assert.equal(formatOutgoingValue('Enum', 'smart'), 'smart');
+  assert.equal(formatOutgoingValue(undefined, 'x'), 'x');
+});
+
+test("onSetValue converts a Boolean DP's numeric command value to a real boolean before sending locally", async (t) => {
+  t.after(() => __clearConnectionsForTesting());
+  const gladys = createFakeGladys();
+  const local = fakeLocalClient({ connected: true });
+  __setConnectionForTesting('vacuum:eb111', {
+    deviceId: 'eb111',
+    ip: '192.168.1.42',
+    local,
+    cloud: null,
+    featureKeyToDp: new Map([['power', { dpId: 1, code: 'switch_status', dpType: 'Boolean' }]]),
+    dockValue: undefined,
+    lastKnownState: new Map(),
+  });
+
+  await onSetValue(gladys, {
+    device: { external_id: 'vacuum:eb111' },
+    feature: { external_id: 'vacuum:eb111:power' },
+    value: 0,
+    config: {},
+  });
+
+  assert.deepEqual(local.setCalls, [{ dpId: 1, value: false }]);
+});
+
+test("onSetValue converts a Boolean DP's numeric command value to a real boolean before falling back to the cloud", async (t) => {
+  t.after(() => __clearConnectionsForTesting());
+  const gladys = createFakeGladys();
+  const local = fakeLocalClient({ connected: false });
+  const cloudCalls = [];
+  __setConnectionForTesting('vacuum:eb111', {
+    deviceId: 'eb111',
+    ip: '192.168.1.42',
+    local,
+    cloud: { sendCommand: async (id, code, value) => cloudCalls.push({ id, code, value }) },
+    featureKeyToDp: new Map([['power', { dpId: 1, code: 'switch_status', dpType: 'Boolean' }]]),
+    dockValue: undefined,
+    lastKnownState: new Map(),
+  });
+
+  await onSetValue(gladys, {
+    device: { external_id: 'vacuum:eb111' },
+    feature: { external_id: 'vacuum:eb111:power' },
+    value: 1,
+    config: {},
+  });
+
+  assert.deepEqual(cloudCalls, [{ id: 'eb111', code: 'switch_status', value: true }]);
 });

@@ -196,6 +196,25 @@ def cmd_send_command(params: dict[str, Any]) -> dict[str, Any]:
     return {"success": True}
 
 
+def cmd_get_status(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Current DP values for one device, `[{code, value}]` — mirrors the
+    classic Cloud API's GET .../status shape (src/tuya/cloud.js#getStatus) so
+    runTestConnectionAction() works the same regardless of onboarding method.
+    Refreshes the device cache on a miss (e.g. a device seen once but not
+    since a container restart) rather than failing outright.
+    """
+    if state.manager is None:
+        raise RuntimeError("No active device-sharing session")
+    device_id = params["device_id"]
+    device = state.manager.device_map.get(device_id)
+    if device is None:
+        state.manager.update_device_cache()
+        device = state.manager.device_map.get(device_id)
+    if device is None:
+        raise RuntimeError(f"Unknown device {device_id}")
+    return [{"code": code, "value": value} for code, value in device.status.items()]
+
+
 COMMANDS = {
     "qr_start": cmd_qr_start,
     "qr_poll": cmd_qr_poll,
@@ -204,6 +223,7 @@ COMMANDS = {
     "logout": cmd_logout,
     "discover": cmd_discover,
     "send_command": cmd_send_command,
+    "get_status": cmd_get_status,
 }
 
 

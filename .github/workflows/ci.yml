@@ -100,6 +100,7 @@ jobs:
               "logout",
               "discover",
               "send_command",
+              "get_status",
           }
           missing = expected - set(tuya_bridge.COMMANDS)
           assert not missing, f"bridge/tuya_bridge.py is missing commands: {missing}"
