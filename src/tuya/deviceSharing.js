@@ -70,6 +70,16 @@ export class TuyaDeviceSharingClient {
     await this.bridge.call('send_command', { device_id: deviceId, code, value });
   }
 
+  /**
+   * Current values of every DP, by code — cloud status fallback for
+   * runTestConnectionAction() when the local session is down, mirroring
+   * TuyaCloudClient#getStatus's `[{ code, value }]` shape so both onboarding
+   * methods work identically there.
+   */
+  async getStatus(deviceId) {
+    return this.bridge.call('get_status', { device_id: deviceId });
+  }
+
   async logout() {
     return this.bridge.call('logout', {});
   }

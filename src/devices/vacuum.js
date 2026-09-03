@@ -115,7 +115,7 @@ export function buildFeatures(deviceExternalId, dpsByCode, language = 'en') {
   const featureKeyToDp = new Map();
   for (const f of known) {
     dpIdToFeatureKey.set(String(f.dpId), f.key);
-    featureKeyToDp.set(f.key, { dpId: f.dpId, code: f.code });
+    featureKeyToDp.set(f.key, { dpId: f.dpId, code: f.code, dpType: dpsByCode.get(f.code)?.type });
   }
 
   if (dockValue !== undefined) {
@@ -149,6 +149,51 @@ export function buildDiscoveredDevice(gladys, { deviceId, name, dpsByCode, ip },
     params,
     features,
   };
+}
+
+/**
+ * Convert a raw Tuya DP value (as read from the device) into the shape
+ * gladys.publishState() requires (see the SDK README: "value is a number,
+ * or `{ text }`"). Tuya's own JS types don't line up with that contract on
+ * two DP types — passing the raw value straight through made every affected
+ * feature fail with "states[0]: must have a numeric 'state' or a string
+ * 'text'" on every single update:
+ *   - Boolean DPs decode to a JS boolean (`true`/`false`), not a number.
+ *   - Enum/String DPs decode to a plain string, which publishState only
+ *     accepts wrapped as `{ text }` — an unwrapped string is sent as
+ *     `state`, which must be numeric.
+ * Value/Integer/Bitmap DPs already decode to a plain number and need no
+ * conversion.
+ */
+export function formatIncomingValue(dpType, value) {
+  if (dpType === 'Boolean') {
+    return Number(value);
+  }
+  if (dpType === 'Enum' || dpType === 'String') {
+    return { text: String(value) };
+  }
+  return value;
+}
+
+/**
+ * Convert the value a Gladys command carries (per the SDK README: a number,
+ * except on `text` category features, whose commands are strings) into what
+ * the Tuya DP actually expects to be sent as. Only Boolean DPs need this: a
+ * switch feature's command value is a number (0/1), but Tuya's local and
+ * cloud APIs expect a real JSON boolean for a Boolean-typed DP — sending the
+ * number as-is has been observed to make the device silently ignore the
+ * command (a local `set()` timeout, or a cloud "network error:(2008)").
+ * Value/Integer DPs already receive a number; Enum/String DPs already
+ * receive the right string (the selected option's raw value).
+ */
+export function formatOutgoingValue(dpType, value) {
+  if (dpType === 'Boolean') {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
+  if (dpType === 'Value' || dpType === 'Integer') {
+    return Number(value);
+  }
+  return value;
 }
 
 async function publishTransport(gladys, externalId, transport, extra = {}) {
@@ -256,8 +301,9 @@ export function connectDevice(gladys, device, config, registryEntry) {
         }
         entry.lastKnownState.set(key, value);
         const id = featureExternalId(device.external_id, key);
+        const dpType = featureKeyToDp.get(key)?.dpType;
         gladys
-          .publishState(id, value)
+          .publishState(id, formatIncomingValue(dpType, value))
           .catch((err) => logger.error(`publishState failed for ${id}: ${err.message}`));
       }
     },
@@ -320,7 +366,7 @@ export async function onSetValue(gladys, { device, feature, value, config }) {
   if (!target) {
     throw new Error(`Feature "${key}" is not controllable on this device`);
   }
-  const dpValue = isDockFeature ? entry.dockValue : value;
+  const dpValue = isDockFeature ? entry.dockValue : formatOutgoingValue(target.dpType, value);
 
   const preferLocal = config?.GLADYS_PREFER_LOCAL !== false;
   const localReady = entry.local.isConnected();
@@ -347,10 +393,9 @@ export async function onSetValue(gladys, { device, feature, value, config }) {
 export async function runTestConnectionAction(gladys, { fields }) {
   const entry = connections.get(fields.device);
   if (!entry) {
-    return {
-      en: 'This vacuum has not been connected yet. Check the integration logs.',
-      fr: "Cet aspirateur n'a pas encore été connecté. Vérifiez les logs de l'intégration.",
-    };
+    // Throwing (see below) rather than resolving is what turns this red in
+    // the Configuration screen — connectivity could not be verified at all.
+    throw new Error('This vacuum has not been connected yet. Check the integration logs.');
   }
 
   const localConnected = entry.local.isConnected();
@@ -359,6 +404,11 @@ export async function runTestConnectionAction(gladys, { fields }) {
     .join(', ');
 
   if (!localConnected) {
+    if (!entry.cloud) {
+      throw new Error(
+        'Not reachable locally, and no Tuya Cloud client is configured as a fallback',
+      );
+    }
     try {
       const status = await entry.cloud.getStatus(entry.deviceId);
       const cloudState = status.map((s) => `${s.code}=${s.value}`).join(', ');
@@ -367,10 +417,13 @@ export async function runTestConnectionAction(gladys, { fields }) {
         fr: `Session locale indisponible, jointe via le cloud Tuya. État : ${cloudState || '(vide)'}.`,
       };
     } catch (err) {
-      return {
-        en: `Not reachable locally nor via the Tuya Cloud API: ${err.message}`,
-        fr: `Injoignable en local comme via l'API cloud Tuya : ${err.message}`,
-      };
+      // Throwing (rather than resolving with a "failure" message) is what
+      // actually turns the action's result red in the Configuration screen
+      // — resolving always acks success regardless of what the message
+      // says, which used to show a green "not reachable" result.
+      throw new Error(`Not reachable locally nor via the Tuya Cloud API: ${err.message}`, {
+        cause: err,
+      });
     }
   }
 
