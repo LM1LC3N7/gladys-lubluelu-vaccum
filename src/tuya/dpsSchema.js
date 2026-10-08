@@ -2,8 +2,8 @@
 // Translate a Tuya device's cloud-reported DP schema into Gladys features.
 //
 // The whole point of fetching `/v1.1/devices/{id}/specifications` (see
-// src/tuya/cloud.js) instead of hardcoding DP numbers: Tuya's "Sweep Robot"
-// (scwxcy) product category has a standard set of `code` names (switch_status,
+// src/tuya/cloud.js) instead of hardcoding DP numbers: Tuya's "Robot vacuum"
+// (`sd`) product category has a standard set of `code` names (switch_status,
 // mode, electricity_left...), but which numeric `dp_id` each one sits behind
 // is assigned per-device at pairing time and varies across firmwares/SKUs —
 // exactly the "specific to firmware" trap flagged when this integration was
@@ -300,18 +300,26 @@ function buildMaintenance(name, key) {
  * from its cloud-reported DP schema. Codes the device doesn't report, or
  * whose live `type` doesn't match what a builder expects, are silently
  * skipped (see the module doc comment above) — never an error.
+ *
+ * Several codes are aliases of one feature (`switch_status`/`power_go` ->
+ * `power`, `electricity_left`/`battery_percentage` -> `battery`): when a
+ * device reports more than one of them, only the first in KNOWN_CODES order
+ * is built. Building both used to emit two features with the SAME
+ * external_id, and map two DPs onto one feature key.
  * @param {Map<string, {dpId:number,type:string,values:object}>} dpsByCode
  * @param {'en'|'fr'} [language]
  */
 export function buildKnownFeatures(dpsByCode, language = 'en') {
   const features = [];
+  const builtKeys = new Set();
   for (const [code, builder] of Object.entries(KNOWN_CODES)) {
     const entry = dpsByCode.get(code);
     if (!entry) {
       continue;
     }
     const feature = builder(entry, language);
-    if (feature) {
+    if (feature && !builtKeys.has(feature.key)) {
+      builtKeys.add(feature.key);
       features.push({ ...feature, code });
     }
   }

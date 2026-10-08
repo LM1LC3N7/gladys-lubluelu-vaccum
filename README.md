@@ -166,7 +166,7 @@ newer version exists:
 | ---------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pip`            | `bridge/requirements.txt` | `tuya-device-sharing-sdk` and its own deps (`cryptography`, `requests`, `paho-mqtt`) — the piece that changes when Tuya ships an SDK release. |
 | `npm`            | `package.json`            | `@gladysassistant/integration-sdk`, `tuyapi`, and the dev tooling (eslint/prettier).                                                          |
-| `docker`         | `Dockerfile`              | The `node:22-alpine` base image.                                                                                                              |
+| `docker`         | `Dockerfile`              | The `node:24-alpine` base image (an LTS line, kept in lockstep with `.nvmrc` by `test/runtime.test.js`).                                      |
 | `github-actions` | `.github/workflows/*.yml` | The actions the workflows themselves use (`actions/checkout`, `docker/build-push-action`...).                                                 |
 
 Every PR Dependabot opens — on any of the four — runs the full `ci.yml` suite already described
@@ -304,7 +304,7 @@ Smart Life) and no physical SL68 unit were available while writing this integrat
   built directly from the installed SDK's own `CustomerDevice`/`local_strategy` fields (read from
   its source, not guessed) — structurally verified, not exercised against a real device's actual
   response.
-- **Implemented from Tuya's public "Sweep Robot" (`scwxcy`) category documentation, not yet
+- **Implemented from Tuya's public "Robot vacuum" (`sd`) category documentation, not yet
   confirmed on a real SL68**: the exact `code` names in `KNOWN_CODES`
   (`src/tuya/dpsSchema.js`) — `switch_status`, `mode`, `cistern`, `suction`/`power_level`/`speed`,
   `electricity_left`/`battery_percentage`, `fault`, `seek`, `roll_brush`/`edge_brush`/`filter` —
