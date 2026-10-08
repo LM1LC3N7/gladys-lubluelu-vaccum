@@ -218,6 +218,8 @@ merge --auto` step fails harmlessly and the PR just waits for manual review like
 │  └─ en.md / fr.md                  # END-USER documentation, re-hosted by Gladys itself in its UI
 ├─ gladys-assistant-integration.json # the manifest: name, version, Docker image, config form, actions
 ├─ Dockerfile                        # multi-stage: Python venv + Node deps -> one runtime image
+├─ .nvmrc                            # Node major for CI/release, must match the Dockerfile's (LTS)
+├─ AUDIT.md                          # project audit + proposed roadmap (French, October 2026)
 └─ cover.png                         # catalog cover
 ```
 
