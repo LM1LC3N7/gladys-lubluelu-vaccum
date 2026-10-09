@@ -93,7 +93,12 @@ Actions (**Alors…**) :
 
 - **Aspirateur : lancer un nettoyage** — programme, aspiration et débit d'eau appliqués ensemble,
   puis départ : une carte au lieu de trois. _Inchangé_ garde le réglage actuel du robot.
-- **Aspirateur : nettoyer une zone** — nettoyer une zone par son nom.
+- **Aspirateur : nettoyer une zone** — nettoyer une zone par son nom, tel qu'il apparaît sur les
+  boutons de zone de l'aspirateur (« Zone - Cuisine » → `Cuisine`). Majuscules et accents sont
+  ignorés et un début de nom suffit s'il est unique (`chamb` pour « Chambres ») ; si plusieurs
+  zones commencent pareil, le journal de la scène les liste. Gladys ne sait pas encore proposer les
+  zones dans un menu déroulant ici ; l'action native **Contrôler les appareils** peut proposer les
+  boutons « Zone - … » de l'aspirateur dans une liste.
 
 ## Zones de nettoyage (robots LiDAR)
 

@@ -135,6 +135,22 @@ export function findZone(zones, nameOrSlug) {
   return slug ? zones.find((zone) => zone.slug === slug) : undefined;
 }
 
+/**
+ * Find a zone typed by hand (a scene field): the exact name first, else the
+ * one zone whose name starts with it ("chamb" -> "Chambres"), ignoring case
+ * and accents. Several matches is not a guess: the candidates come back.
+ * @returns {{ zone?: object, candidates: Array<object> }}
+ */
+export function resolveZone(zones, query) {
+  const exact = findZone(zones, query);
+  if (exact) {
+    return { zone: exact, candidates: [exact] };
+  }
+  const slug = zoneSlug(query);
+  const candidates = slug ? zones.filter((zone) => zone.slug.startsWith(slug)) : [];
+  return candidates.length === 1 ? { zone: candidates[0], candidates } : { candidates };
+}
+
 /** The learned-zones map with `name` set (or removed when `command` is null). */
 export function withLearnedZone(learnedZones, deviceId, name, command) {
   const next = structuredClone(learnedZones ?? {});

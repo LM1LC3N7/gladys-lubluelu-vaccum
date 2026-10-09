@@ -85,7 +85,11 @@ Actions (**Then…**):
 
 - **Vacuum: start cleaning** — program, suction and water level applied together, then start:
   one card instead of three. _Unchanged_ keeps the robot's current setting.
-- **Vacuum: clean a zone** — clean a zone by its name.
+- **Vacuum: clean a zone** — clean a zone by its name, as on the vacuum's zone buttons
+  ("Zone - Kitchen" → `Kitchen`). Case and accents are ignored and a unique start is enough
+  (`bed` for "Bedrooms"); when several zones start the same way, the scene log lists them.
+  Gladys cannot show the zones in a drop-down here yet; the built-in **Control devices** action may
+  offer the vacuum's "Zone - …" buttons in a list instead.
 
 ## Cleaning zones (LiDAR robots)
 
