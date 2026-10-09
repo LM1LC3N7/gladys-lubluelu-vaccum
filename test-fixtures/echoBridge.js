@@ -18,6 +18,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (request.cmd === 'exit') {
     process.exit(1);
   }
+  if (request.cmd === 'push') {
+    // An unsolicited live update (no id), as the bridge relays Tuya's MQTT push.
+    process.stdout.write(
+      `${JSON.stringify({ event: 'status', device_id: 'eb111', status: { status: 'charging' } })}\n`,
+    );
+  }
   if (request.cmd === 'slow') {
     setTimeout(() => {
       process.stdout.write(`${JSON.stringify({ id: request.id, ok: true, result: 'late' })}\n`);

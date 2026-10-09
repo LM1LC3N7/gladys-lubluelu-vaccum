@@ -36,6 +36,21 @@ export function buildQrImageUrl(content, { size = 300 } = {}) {
 export class TuyaDeviceSharingClient {
   constructor({ bridge }) {
     this.bridge = bridge;
+    // The last session known good, replayed into a respawned bridge process
+    // (see restoreAfterRespawn()) so a Python crash doesn't silently log the
+    // account out until the next container restart.
+    this.session = null;
+  }
+
+  /**
+   * Re-send the cached session to a freshly respawned bridge. Must be called
+   * synchronously from PythonBridge's `onSpawn` hook: its write then reaches
+   * the new process before the request that respawned it.
+   */
+  restoreAfterRespawn() {
+    if (this.session) {
+      this.bridge.call('restore_session', { session: this.session }).catch(() => {});
+    }
   }
 
   /** Mint a fresh QR login token. Resolves `{ token, content }` — `content` must be
@@ -47,17 +62,27 @@ export class TuyaDeviceSharingClient {
 
   /** One non-blocking login check. Resolves `{ status: 'pending' }` or `{ status: 'success', session }`. */
   async pollQrLogin(token, userCode) {
-    return this.bridge.call('qr_poll', { token, user_code: userCode });
+    const result = await this.bridge.call('qr_poll', { token, user_code: userCode });
+    if (result?.status === 'success' && result.session) {
+      this.session = result.session;
+    }
+    return result;
   }
 
   /** Rebuild the bridge's in-memory session after a restart, from a previously-persisted one. */
   async restoreSession(session) {
-    return this.bridge.call('restore_session', { session });
+    const result = await this.bridge.call('restore_session', { session });
+    this.session = session;
+    return result;
   }
 
   /** Current session (tokens possibly refreshed since login/restore) — re-persist after calling. */
   async getSession() {
-    return this.bridge.call('get_session', {});
+    const session = await this.bridge.call('get_session', {});
+    if (session) {
+      this.session = session;
+    }
+    return session;
   }
 
   /** Every device on the linked account, each with its local_key + full DP schema + LAN IP. */
@@ -81,6 +106,7 @@ export class TuyaDeviceSharingClient {
   }
 
   async logout() {
+    this.session = null;
     return this.bridge.call('logout', {});
   }
 }

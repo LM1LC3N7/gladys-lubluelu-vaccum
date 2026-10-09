@@ -11,17 +11,23 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   DEFAULT_CONFIG,
+  VALID_LANGUAGES,
   VALID_REGIONS,
   VALID_PROTOCOL_VERSIONS,
   VALID_QR_SCHEMES,
 } from '../src/config.js';
+import { WIDGET, BUTTON_SETTINGS } from '../src/widgets.js';
+import { SCENE_TRIGGER } from '../src/events.js';
+import { SCENE_ACTION } from '../src/scenes.js';
+import { PROGRAMS, SUCTION_LEVELS, WATER_LEVELS } from '../src/cleaning.js';
+import { CONSUMABLES } from '../src/tuya/dpsSchema.js';
 
 const manifest = JSON.parse(
   await readFile(new URL('../gladys-assistant-integration.json', import.meta.url), 'utf8'),
 );
 
 // Registered directly in index.js.
-const HANDLED_ACTIONS = ['test_connection'];
+const HANDLED_ACTIONS = ['test_connection', 'learn_zone', 'forget_zone'];
 
 // Mirrors the store's manifest.schema.json bounds — checked here too since a
 // manifest passing this repo's own CI is otherwise no guarantee it clears
@@ -128,4 +134,56 @@ test('network_discovery declares the UDP broadcast ports this integration decode
 
 test('transports declares both local and cloud (dual-channel, see src/devices/vacuum.js)', () => {
   assert.deepEqual(manifest.transports, ['local', 'cloud']);
+});
+
+test('language options exactly match src/config.js#VALID_LANGUAGES', () => {
+  const field = manifest.config_schema.find((f) => f.key === 'language');
+  assert.deepEqual(
+    field.options.map((o) => o.value),
+    VALID_LANGUAGES,
+  );
+});
+
+test('widgets, scene triggers and scene actions require Gladys 5.1 (store rule)', () => {
+  assert.equal(manifest.gladys_version, '>=5.1.0');
+});
+
+test('declared widgets are exactly the ones src/widgets.js builds (keys are forever)', () => {
+  assert.deepEqual(
+    manifest.widgets.map((w) => w.key),
+    Object.values(WIDGET),
+  );
+  for (const widget of manifest.widgets) {
+    const vacuum = widget.settings.find((s) => s.key === 'vacuum');
+    assert.equal(vacuum.source, 'devices', `${widget.key}: the vacuum setting lists the devices`);
+  }
+  const quickClean = manifest.widgets.find((w) => w.key === WIDGET.QUICK_CLEAN);
+  assert.deepEqual(
+    quickClean.settings.filter((s) => s.key.startsWith('button_')).map((s) => s.key),
+    BUTTON_SETTINGS,
+  );
+});
+
+test('declared scene triggers are exactly the events src/events.js fires', () => {
+  assert.deepEqual(
+    manifest.scene_triggers.map((t) => t.key),
+    Object.values(SCENE_TRIGGER),
+  );
+  const low = manifest.scene_triggers.find((t) => t.key === SCENE_TRIGGER.CONSUMABLE_LOW);
+  assert.deepEqual(
+    low.fields.find((f) => f.key === 'consumable').options.map((o) => o.value),
+    CONSUMABLES.map((c) => c.key),
+  );
+});
+
+test('declared scene actions are exactly the handlers, their options the generic vocabulary', () => {
+  assert.deepEqual(
+    manifest.scene_actions.map((a) => a.key),
+    Object.values(SCENE_ACTION),
+  );
+  const start = manifest.scene_actions.find((a) => a.key === SCENE_ACTION.START_CLEANING);
+  const optionsOf = (key) => start.fields.find((f) => f.key === key).options.map((o) => o.value);
+  assert.deepEqual(optionsOf('program'), Object.keys(PROGRAMS));
+  assert.deepEqual(optionsOf('suction'), ['unchanged', ...Object.keys(SUCTION_LEVELS)]);
+  assert.deepEqual(optionsOf('water'), ['unchanged', ...Object.keys(WATER_LEVELS)]);
 });
