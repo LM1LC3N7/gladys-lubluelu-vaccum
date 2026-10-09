@@ -28,18 +28,82 @@ re-checks it periodically in the background (either method) — you never have t
 for that.
 
 These features show up per vacuum, automatically adapted to what your specific device reports
-(not every vacuum has every one of these):
+(not every vacuum has every one of these). Their names are in French or English, as set by the
+**Language of device names** field (Gladys keeps a name as it was when the device was added):
 
-- **Power** — start/pause the current cleaning run.
-- **Mode** — a dropdown (Smart, Along walls, Spot, Single room, Mopping, Return to dock...).
-- **Return to dock** — a one-click button, shown only when your vacuum's Mode list has a
-  "return to dock" value.
+- **State** — what the robot is doing: cleaning, paused, returning to the dock, charging, on the
+  dock, stopped, error. Gladys shows it as a badge, and it can start a scene ("when the vacuum is
+  back on its dock").
+- **Power** / **Pause** — start, stop or pause the current cleaning.
+- **Mode** — a dropdown (Smart, Along walls, Spot, Selected rooms, Mopping, Return to dock...).
+- **Return to dock** — a one-click button.
 - **Water level** — mopping water flow, when your vacuum has a mop function.
 - **Suction power** — when your vacuum reports a suction/power level.
 - **Battery** — read-only, 0-100%.
+- **Cleaned area / Cleaning time** — of the cleaning under way or last done, and their totals.
 - **Fault code** — read-only, 0 normally.
 - **Find robot** — makes the vacuum chirp, when supported.
-- **Roll brush / Side brush / Filter** — remaining life, when your vacuum reports consumable wear.
+- **Roll brush / Side brush / Filter / Mop pad** — remaining life, and a **Reset** button for
+  each after you replace the part.
+- **Do not disturb** — when your vacuum has a quiet-hours setting.
+- **Zone - …** — one button per cleaning zone (see "Cleaning zones" below).
+
+Requires **Gladys 5.1** or later.
+
+## Dashboard widgets
+
+Add them from the dashboard editor (**Add a widget**, then this integration). Each one shows the
+vacuum picked in its settings, or the first one. They complement the core's **Devices** box,
+which stays the place for every setting (dropdowns, switches):
+
+- **Robot vacuum** — the robot at a glance: battery, state, program, suction, water, the area
+  and time of the cleaning under way, a fault in red, local or cloud link; and the everyday keys
+  of its remote: **Start** (or **Pause** / **Resume**, following the state), **Back to dock**,
+  **Locate**, **Stop**.
+- **Quick clean** — up to four one-tap cleanings, for a wall tablet. Each button is a program
+  (_smart_, _edges_, _spot_, _mop_) or a zone name, typed in the widget settings. Left empty, it
+  offers the vacuum's programs then its zones. The program under way is ticked.
+- **Vacuum remote** — manual driving: forward, turn left, turn right, stop, with the state and
+  battery. Only on vacuums that accept direction control; keep the robot in sight.
+- **Vacuum maintenance** — the remaining life of each part as gauges, the most worn first, and a
+  reset key (asking for confirmation) for each worn part once you have replaced it.
+
+## Scenes
+
+Triggers (**When…** in a scene):
+
+- **Vacuum: cleaning finished** — the robot ended a cleaning and went back to its dock. Gives
+  the cleaned area, the time and the battery to the next actions (for a message such as
+  "Cleaning done: {{area_m2}} m² in {{duration_min}} min").
+- **Vacuum: error** — the robot reported a fault (stuck, wheel, brush, dust bin...), with its
+  description.
+- **Vacuum: part worn out** — a part's remaining life dropped below 10%.
+
+The robot's **State** is also a regular device state, usable as a trigger.
+
+Actions (**Then…**):
+
+- **Vacuum: start cleaning** — program, suction and water level applied together, then start:
+  one card instead of three. _Unchanged_ keeps the robot's current setting.
+- **Vacuum: clean a zone** — clean a zone by its name.
+
+## Cleaning zones (LiDAR robots)
+
+On robots that clean room by room (LiDAR robots with rooms in the Smart Life app), Gladys can
+send the robot to clean one room, several rooms, or a zone drawn in the app:
+
+1. **The easy way — memorize it from the app.** Start the room or zone clean once from the
+   Smart Life app, while the integration is running. Then, in the integration's Configuration
+   screen, run **Memorize the last zone**: pick the vacuum, give it a name ("Kitchen"). Gladys
+   can now replay it any time.
+2. **Or type the rooms by number**, in **Rooms by id (advanced)**: `Kitchen=2, Living room=0+1,
+Bedrooms=3+4x2` (`+` for several rooms, `x2` for two passes). The room numbers are the
+   robot's own: the integration logs them each time a room clean is started from the app.
+
+Then open the **Discovery** tab and click **Update** on the vacuum: each zone gets its **Zone -
+…** button, usable from the dashboard, the **Quick clean** widget and the **Vacuum: clean a
+zone** scene action. **Forget a memorized zone** removes one. Re-mapping your home in the app
+can renumber the rooms: memorize the zones again after a new map.
 
 ## Prerequisites
 
@@ -104,6 +168,13 @@ this integration is connected can make both flaky — this is a limitation of th
 firmware, not something this integration can work around.
 
 ## Troubleshooting
+
+- **"No room or zone clean seen since the integration started"** when memorizing a zone: start
+  the room/zone clean from the Smart Life app _after_ the integration started, wait a few
+  seconds, then run the action again. If it still fails, your robot doesn't report its room
+  selection: type the rooms by number instead.
+- **A zone button does nothing**: the room numbers may have changed after a new map in the app —
+  memorize the zone again.
 
 - **"Enter your Smart Life user code first" even though it's filled in**: the form wasn't
   **saved** before clicking the connect button — those are two separate actions. Click Save, wait

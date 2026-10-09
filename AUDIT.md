@@ -19,12 +19,12 @@ Les points qui comptent vraiment :
 | Priorité | Constat                                                                                                                                                               | Statut        |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | Haute    | L'image Docker tourne sur **Node 25**, une version impaire (jamais LTS) arrivée en fin de vie le 1er juin 2026 ; la CI, elle, teste sur Node 22.                      | **[corrigé]** |
-| Haute    | L'**état réel du robot** (DP `status` : en nettoyage, en charge, retour à la base, en pause…) n'est pas remonté : l'utilisateur ne voit pas ce que fait l'aspirateur. | Proposition   |
-| Haute    | En mode **cloud seul** (aucune IP locale connue) ou session locale tombée, **aucun état n'est publié** : batterie, mode, etc. restent figés dans Gladys.              | Proposition   |
+| Haute    | L'**état réel du robot** (DP `status` : en nettoyage, en charge, retour à la base, en pause…) n'est pas remonté : l'utilisateur ne voit pas ce que fait l'aspirateur. | **[fait]**    |
+| Haute    | En mode **cloud seul** (aucune IP locale connue) ou session locale tombée, **aucun état n'est publié** : batterie, mode, etc. restent figés dans Gladys.              | **[fait]**    |
 | Moyenne  | Deux codes « alias » (`switch_status`/`power_go`, `electricity_left`/`battery_percentage`) produisaient deux features avec le **même `external_id`**.                 | **[corrigé]** |
-| Moyenne  | Le SDK 0.14.0 (widgets de dashboard, déclencheurs/actions de scène) attend dans la PR Dependabot #17 — compatible, tests verts.                                       | À merger      |
-| Moyenne  | Si le processus Python redémarre, la session Smart Life n'est pas restaurée : la découverte et le repli cloud échouent en silence (log `debug`) jusqu'au redémarrage. | Recommandé    |
-| Basse    | Libellés d'options toujours en anglais, `tuyapi` sans release depuis mai 2025, couverture de `local.js` à 29 %, `index.js` non testé.                                 | Recommandé    |
+| Moyenne  | Le SDK 0.14.0 (widgets de dashboard, déclencheurs/actions de scène) attend dans la PR Dependabot #17 — compatible, tests verts.                                       | **[fait]**    |
+| Moyenne  | Si le processus Python redémarre, la session Smart Life n'est pas restaurée : la découverte et le repli cloud échouent en silence (log `debug`) jusqu'au redémarrage. | **[fait]**    |
+| Basse    | Libellés d'options toujours en anglais, `tuyapi` sans release depuis mai 2025, couverture de `local.js` à 29 %, `index.js` non testé.                                 | Partiel       |
 
 ## 2. Structure et architecture
 
@@ -290,3 +290,48 @@ les noms ci-dessus doivent être validés avant la première publication.
    validation des clés.
 4. Fin octobre : Node 26 LTS (Dockerfile + `.nvmrc`), et relancer `actions/setup-python` 7 /
    `dependabot/fetch-metadata` 3.
+
+## 11. Mise en œuvre (9 octobre 2026)
+
+Les étapes 1 à 3 sont implémentées (`gladys_version >= 5.1.0`, SDK 0.14). Points 2 à 8 du §3 traités,
+sauf la couverture de `local.js` / `index.js` (toujours à faire).
+
+### Widgets : ce qui est transposé du projet Android TV, et ce qui ne l'est pas
+
+Le projet `gladys-integration-android-tv-remote` découpe une TV en quatre widgets (télécommande,
+lecture, applications, volume). Transposé à un aspirateur :
+
+| Android TV                         | Aspirateur                                                                                                                   | Widget        |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| Télécommande (marche, accueil, OK) | Les touches de la télécommande du robot : démarrer / pause / reprendre (selon l'état), retour base, localiser, arrêter       | `vacuum`      |
+| Lecture + titre en cours           | Le « titre en cours » d'un robot : état, programme, aspiration, eau, surface et durée du nettoyage en cours, défaut, liaison | `vacuum`      |
+| Raccourcis d'applications          | Raccourcis de nettoyage : programmes (intelligent, bords, ciblé, serpillière) et zones, celui en cours coché                 | `quick_clean` |
+| Pavé directionnel                  | Pilotage manuel (`direction_control`) : avancer, gauche, droite, stop                                                        | `remote`      |
+| Volume                             | Sans équivalent ; à la place, l'entretien : jauges d'usure, remise à zéro confirmée des pièces usées                         | `maintenance` |
+
+Écartés pour ne pas doublonner la boîte « Appareils » du cœur (qui affiche déjà le badge d'état, le
+bouton de retour à la base et chaque réglage en liste) : un widget par réglage (aspiration, eau…) —
+jugé inadapté par le testeur du projet Dreame, et contraire à la spécification des widgets qui
+réserve listes et curseurs aux boîtes d'appareils — et un widget batterie seul.
+
+Règles du cœur respectées (vérifiées par les tests) : 8 composants au plus, clés d'action uniques,
+aucun style `primary` (invisible en mode sombre), choix courant signalé par l'icône `check-circle`,
+contenu validé par `validateWidgetContent()` du SDK dans toutes les situations et les deux langues.
+
+### Nettoyage par zones
+
+Les robots Tuya LiDAR passent le nettoyage par pièce/zone sur le DP brut `command_trans`, en trames
+« sweeper » (`0xAA`, longueur, commande `0x14` pièces / `0x28` zones, données, somme de contrôle) ;
+le robot répond par une trame d'état (`0x15` / `0x29`). Format vérifié octet pour octet contre les
+vecteurs de test de la crate `xplorer-rs` (robots Tuya X-Plorer). Les noms de pièces ne vivent que
+dans la carte (API cloud propre au fabricant), d'où deux façons de créer une zone :
+
+- **apprise** : lancer le nettoyage depuis l'app Smart Life, puis l'action « Mémoriser la dernière
+  zone » — la trame rapportée par le robot est rejouée telle quelle (fonctionne aussi pour les zones
+  dessinées) ;
+- **saisie** : `Cuisine=2, Salon=0+1` dans « Pièces par numéro » (les numéros sont journalisés à chaque
+  nettoyage lancé depuis l'app).
+
+Chaque zone devient un bouton `Zone - …`, un bouton du widget `quick_clean` et une cible de l'action de
+scène `clean_zone`. **À vérifier sur un vrai SL68** : que le robot utilise bien `command_trans` et y
+rapporte la sélection de l'app.

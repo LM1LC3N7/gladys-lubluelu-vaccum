@@ -45,6 +45,24 @@ independent, mergeable methods; see "Two onboarding methods" below.
   API and pushes it into the running local session without dropping the connection.
 - **Test connection** action: reports the local session's last known state, or the state read via
   the Tuya Cloud API status endpoint when the local session is currently down.
+- **Robot state** (`status` → `VACUUM_CLEANER.STATE`, `src/tuya/dpsSchema.js#vacuumStateOf`):
+  stopped / cleaning / paused / error / returning / charging / docked, the core's translated badge
+  and a device-state scene trigger. Plus session and total cleaned area/time, mop pad wear,
+  consumable reset buttons, do-not-disturb, and return to dock through `switch_charge`.
+- **States without a LAN session**: the bridge relays Tuya's MQTT push (`refresh_mq()`) as
+  id-less event lines, and a 60 s cloud status poll covers the Cloud API method. Local and cloud
+  updates share one path (`src/devices/vacuum.js#applyDps`): only changed values, one
+  `publishStates()` batch.
+- **Dashboard widgets** (`src/widgets.js`, Gladys 5.1): `vacuum` (at a glance + contextual keys),
+  `quick_clean` (four one-tap programs or zones), `remote` (manual driving), `maintenance` (wear
+  gauges + confirmed resets).
+- **Scene triggers and actions** (`src/events.js`, `src/scenes.js`, Gladys 5.1):
+  `cleaning_finished`, `vacuum_error`, `consumable_low`; `start_cleaning` (program + suction +
+  water at once), `clean_zone`.
+- **Zone cleaning** (`src/tuya/sweeper.js`, `src/zones.js`): Tuya sweeper frames on the
+  `command_trans` Raw DP (0x14 rooms, 0x28 zones). Rooms typed by id, or **learned**: the robot
+  reports the selection the Smart Life app sent (0x15/0x29 status), the "Memorize the last zone"
+  action stores it under a name, Gladys replays it. One push button per zone.
 
 ## Two onboarding methods
 
@@ -140,11 +158,11 @@ Recommended reading order:
 Python side (`bridge/requirements.txt`, installed into a venv the Node process spawns — see the
 Dockerfile):
 
-| Package                    | Role                                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------------------------ |
-| `tuya-device-sharing-sdk`  | The official Tuya QR/device-sharing login — no JS port exists, see "Two onboarding methods".     |
-| `cryptography`, `requests` | Its own direct dependencies (AES-GCM/HMAC request signing, HTTP).                                |
-| `paho-mqtt`                | Imported unconditionally by the SDK's `mq.py` even though this bridge never uses live MQTT push. |
+| Package                    | Role                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------- |
+| `tuya-device-sharing-sdk`  | The official Tuya QR/device-sharing login — no JS port exists, see "Two onboarding methods". |
+| `cryptography`, `requests` | Its own direct dependencies (AES-GCM/HMAC request signing, HTTP).                            |
+| `paho-mqtt`                | The SDK's live MQTT push (`Manager.refresh_mq()`), relayed to Node as device updates.        |
 
 Everything else (the Tuya Cloud HTTP client and its HMAC-SHA256 request signing, config
 normalization) is hand-written on top of Node built-ins (`node:crypto`, the global `fetch`) —
@@ -203,16 +221,24 @@ merge --auto` step fails harmlessly and the PR just waits for manual review like
 │  │  ├─ vacuum.js                   # discovery payloads, local-session registry, onSetValue, actions
 │  │  └─ index.js                    # TuyaDeviceRegistry: merges both onboarding methods + UDP
 │  ├─ tuya/
-│  │  ├─ dpsSchema.js                # PURE: cloud DP schema -> Gladys features
+│  │  ├─ dpsSchema.js                # PURE: cloud DP schema -> Gladys features, robot state mapping
+│  │  ├─ sweeper.js                  # PURE: Tuya sweeper frames (room/zone cleaning on command_trans)
 │  │  ├─ cloud.js                    # advanced method: Tuya Cloud OpenAPI client (signing, token, endpoints)
 │  │  ├─ pythonBridge.js             # spawns bridge/tuya_bridge.py, line-delimited JSON protocol
 │  │  ├─ deviceSharing.js            # simple method: QR image URL, login poll loop, registry translation
 │  │  ├─ udpDiscovery.js             # decodes the mediated UDP broadcast scan
 │  │  └─ local.js                    # resilient local TCP session (wraps tuyapi)
+│  ├─ widgets.js                     # PURE: dashboard widget contents + the buttons they may send
+│  ├─ events.js                      # scene triggers + widget refresh nudges, from DP changes
+│  ├─ scenes.js                      # scene actions + widget button execution
+│  ├─ cleaning.js                    # programs/suction/water vocabulary -> each robot's own enums
+│  ├─ zones.js                       # typed and learned zones
+│  ├─ i18n.js                        # feature names, labels (fr/en)
 │  └─ config.js                      # config defaults + normalization (both methods)
-├─ test/                             # one *.test.js per src/ file above, node --test, no library
+├─ test/                             # node --test, no library
 ├─ test-fixtures/
 │  ├─ fakeGladys.js                  # minimal in-memory stand-in for the SDK client, used by tests
+│  ├─ robot.js                       # a full LiDAR robot schema + recording local/cloud fakes
 │  └─ echoBridge.js                  # plain-Node stand-in for bridge/tuya_bridge.py's protocol
 ├─ docs/
 │  └─ en.md / fr.md                  # END-USER documentation, re-hosted by Gladys itself in its UI
@@ -265,18 +291,33 @@ Add the GitHub topic `gladys-assistant-integration`, then **Actions → Release 
 [integration-template-js README](https://github.com/GladysAssistant/integration-template-js) for
 the full publishing flow.
 
-## v0.1 scope
+## Scope
 
-Start/pause, mode (+ return-to-dock convenience button), water level, suction power, battery,
-fault code, find-robot, consumable wear — each built dynamically from the device's own Tuya cloud
-schema (see "What it does" above). Two onboarding methods (simple QR/device-sharing, advanced
-Cloud API), local session with automatic reconnection and `local_key` rotation handling, mediated
-LAN discovery with a manual IP fallback, a best-effort cloud command fallback. Deliberately out of
-scope for now: room/zone mapping and zone cleaning (Tuya exposes this through vendor-specific,
-non-standardized DP formats — see the design discussion that scoped this project), scheduling,
-and voice/do-not-disturb settings.
+Everything in "What it does" above, built dynamically from each device's own Tuya schema, on
+Gladys ≥ 5.1 (widgets and scene declarations). Still out of scope: the cleaning map (Tuya serves
+it from a separate, vendor-specific cloud API — a map image in the `vacuum` widget would need
+it), room names (only the robot's room ids are known: zones are named by the user), schedules,
+and voice settings.
 
 ## Tested and confirmed
+
+**Since the widgets / scenes / zones release** — verified by tests only, not yet on a real
+Gladys 5.1 nor a real SL68:
+
+- every widget content passes the SDK's own `validateWidgetContent()` in every robot situation and
+  both languages; the manifest passes the store validator
+  (`npx github:GladysAssistant/integration-store .`);
+- the sweeper frames match the `xplorer-rs` crate's test vectors byte for byte (zone frame, room
+  status frame read back from a real X-Plorer robot) — X-Plorer robots are Tuya LiDAR robots too,
+  but **whether the SL68 uses DP `command_trans` for rooms, and reports the app's selection back
+  on it, is unverified**: the "Memorize the last zone" action says so plainly when nothing was
+  reported;
+- the MQTT push relay is wired to `tuya_sharing`'s documented listener API and imported against
+  the real SDK in CI, but no live push has been received;
+- `direction_control` (manual driving) moves are sent as the category documents them; how far a
+  robot moves per press depends on its firmware.
+
+**Before that release:**
 
 Honest status, so it's clear what "it works" actually rests on — **no Tuya account (Cloud or
 Smart Life) and no physical SL68 unit were available while writing this integration.**
