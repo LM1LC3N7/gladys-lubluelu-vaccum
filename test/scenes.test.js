@@ -173,3 +173,22 @@ test('clean_zone sends the zone frame, finding the zone by name in any case', as
     /Unknown zone "Garage". Known zones: Kitchen/,
   );
 });
+
+test('clean_zone accepts a unique start of a name, never guesses between several', async (t) => {
+  t.after(() => __clearConnectionsForTesting());
+  const zones = [
+    KITCHEN,
+    { name: 'Salon', slug: 'salon', command: encodeRoomClean([0, 1]) },
+    { name: 'Salle à manger', slug: 'salle_a_manger', command: encodeRoomClean([5]) },
+  ];
+  const { localCalls } = registerRobot({ zones });
+  const run = (zone) => runCleanZone(createFakeGladys(), { vacuum: EXTERNAL_ID, zone }, {});
+  await run('kit');
+  await run('SALLE A');
+  await run('salon'); // exact wins over the longer "Salle…" names
+  assert.deepEqual(
+    localCalls.map((c) => c.value),
+    [KITCHEN.command, zones[2].command, zones[1].command],
+  );
+  await assert.rejects(run('sal'), /Ambiguous zone "sal": Salon, Salle à manger/);
+});

@@ -4,6 +4,7 @@ import {
   findZone,
   parseLearnedZones,
   parseRoomsConfig,
+  resolveZone,
   withLearnedZone,
   zoneSlug,
   zonesFor,
@@ -68,4 +69,22 @@ test('withLearnedZone sets, renames by slug and removes, without mutating its in
   assert.deepEqual(added, { eb111: { KITCHEN: encodeRoomClean([3]) } });
   assert.deepEqual(start, { eb111: { Kitchen: encodeRoomClean([2]) } });
   assert.deepEqual(withLearnedZone(added, 'eb111', 'kitchen', null), {});
+});
+
+test('resolveZone: exact name first, else a unique prefix, candidates when ambiguous', () => {
+  const zones = [
+    { name: 'Chambres', slug: 'chambres' },
+    { name: 'Chambre ami', slug: 'chambre_ami' },
+    { name: 'Entrée', slug: 'entree' },
+  ];
+  assert.equal(resolveZone(zones, 'ENTR').zone.name, 'Entrée');
+  assert.equal(resolveZone(zones, 'chambres').zone.name, 'Chambres');
+  assert.equal(resolveZone(zones, 'chambre a').zone.name, 'Chambre ami');
+  assert.deepEqual(
+    resolveZone(zones, 'chamb').candidates.map((z) => z.name),
+    ['Chambres', 'Chambre ami'],
+  );
+  assert.equal(resolveZone(zones, 'chamb').zone, undefined);
+  assert.deepEqual(resolveZone(zones, '  '), { candidates: [] });
+  assert.deepEqual(resolveZone(zones, 'garage'), { candidates: [] });
 });

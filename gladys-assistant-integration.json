@@ -955,6 +955,10 @@
             "en": "Zone name",
             "fr": "Nom de la zone"
           },
+          "description": {
+            "en": "As on the vacuum's zone buttons (\"Zone - Kitchen\" → Kitchen). Case and accents ignored; a unique start is enough (\"bed\" for Bedrooms).",
+            "fr": "Comme sur les boutons de zone de l'aspirateur (« Zone - Cuisine » → Cuisine). Majuscules et accents ignorés ; un début unique suffit (« chamb » pour Chambres)."
+          },
           "required": true
         }
       ],

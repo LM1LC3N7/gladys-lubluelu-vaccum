@@ -25,7 +25,7 @@ import {
   stop,
 } from './cleaning.js';
 import { getConnection, sendDpCommand } from './devices/vacuum.js';
-import { findZone } from './zones.js';
+import { findZone, resolveZone } from './zones.js';
 
 /** Scene action keys, declared in the manifest `scene_actions` (forever: never rename). */
 export const SCENE_ACTION = {
@@ -57,9 +57,14 @@ export async function runStartCleaning(gladys, fields, config) {
 export async function runCleanZone(gladys, fields, config) {
   const externalId = vacuumOf(fields);
   const entry = getConnection(externalId);
-  const zone = findZone(entry.zones ?? [], fields.zone);
+  const zones = entry.zones ?? [];
+  const { zone, candidates } = resolveZone(zones, fields.zone);
   if (!zone) {
-    const known = (entry.zones ?? []).map((z) => z.name).join(', ') || '(none)';
+    if (candidates.length > 1) {
+      const names = candidates.map((z) => z.name).join(', ');
+      throw new Error(`Ambiguous zone "${fields.zone}": ${names}`);
+    }
+    const known = zones.map((z) => z.name).join(', ') || '(none)';
     throw new Error(`Unknown zone "${fields.zone}". Known zones: ${known}`);
   }
   const transport = await cleanZone(gladys, externalId, zone, config);
