@@ -43,6 +43,25 @@ test('buildKnownFeatures only builds features for codes actually present', () =>
   assert.ok(features.some((f) => f.key === 'battery' && f.dpId === 4));
 });
 
+test('buildKnownFeatures builds one feature per key when a device reports alias codes', () => {
+  const byCode = indexDpsByCode({
+    status: [
+      { code: 'switch_status', dp_id: 1, type: 'Boolean', values: '{}' },
+      { code: 'power_go', dp_id: 2, type: 'Boolean', values: '{}' },
+      { code: 'electricity_left', dp_id: 6, type: 'Value', values: '{"min":0,"max":100}' },
+      { code: 'battery_percentage', dp_id: 8, type: 'Value', values: '{"min":0,"max":100}' },
+    ],
+  });
+  const features = buildKnownFeatures(byCode);
+  assert.deepEqual(
+    features.map((f) => [f.key, f.code]),
+    [
+      ['power', 'switch_status'],
+      ['battery', 'electricity_left'],
+    ],
+  );
+});
+
 test('buildKnownFeatures skips a code whose live type does not match the builder', () => {
   // "mode" reported as a Boolean instead of an Enum: schema surprise, not a crash.
   const byCode = indexDpsByCode({

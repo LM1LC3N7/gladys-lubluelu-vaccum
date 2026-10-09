@@ -13,7 +13,11 @@
 // a device's local_key/DP schema.
 // -----------------------------------------------------------------------------
 
+import { LANGUAGES, DEFAULT_LANGUAGE } from './i18n.js';
+import { LEARNED_ZONES_CONFIG_KEY, parseLearnedZones, parseRoomsConfig } from './zones.js';
+
 export const DEFAULT_CONFIG = {
+  language: DEFAULT_LANGUAGE,
   user_code: '',
   qr_scheme: 'smartlife',
   access_id: '',
@@ -23,13 +27,15 @@ export const DEFAULT_CONFIG = {
   device_ips: '',
   refresh_interval_minutes: 60,
   protocol_version: '3.3',
+  rooms: '',
 };
 
 const REFRESH_MIN = 5;
 const REFRESH_MAX = 1440;
 export const VALID_REGIONS = ['eu', 'us', 'cn', 'in'];
-export const VALID_PROTOCOL_VERSIONS = ['3.1', '3.3', '3.4'];
+export const VALID_PROTOCOL_VERSIONS = ['3.1', '3.3', '3.4', '3.5'];
 export const VALID_QR_SCHEMES = ['smartlife', 'tuyaSmart'];
+export const VALID_LANGUAGES = LANGUAGES;
 
 function toBoundedNumber(value, fallback, min, max) {
   const parsed = Number(value);
@@ -78,6 +84,8 @@ export function normalizeConfig(raw = {}) {
   const qrScheme = VALID_QR_SCHEMES.includes(raw.qr_scheme)
     ? raw.qr_scheme
     : DEFAULT_CONFIG.qr_scheme;
+  const language = VALID_LANGUAGES.includes(raw.language) ? raw.language : DEFAULT_CONFIG.language;
+  const rooms = parseRoomsConfig(raw.rooms);
 
   return {
     ...DEFAULT_CONFIG,
@@ -85,6 +93,11 @@ export function normalizeConfig(raw = {}) {
     region,
     protocol_version: protocolVersion,
     qr_scheme: qrScheme,
+    language,
+    // Zones (see src/zones.js): typed in `rooms`, or learned from the app.
+    roomZones: rooms.zones,
+    roomErrors: rooms.errors,
+    learnedZones: parseLearnedZones(raw[LEARNED_ZONES_CONFIG_KEY]),
     deviceIds: parseList(raw.device_ids),
     deviceIps: parseDeviceIps(raw.device_ips),
     refresh_interval_minutes: toBoundedNumber(

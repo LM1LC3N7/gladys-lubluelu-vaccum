@@ -21,6 +21,7 @@ import { discoverTuyaAnnouncements } from '../tuya/udpDiscovery.js';
 import { indexDpsByCode } from '../tuya/dpsSchema.js';
 import { toRegistryEntry } from '../tuya/deviceSharing.js';
 import { buildDiscoveredDevice, connectDevice, deviceIdOf } from './vacuum.js';
+import { zonesFor } from '../zones.js';
 
 const logger = createLogger({ name: 'discovery' });
 
@@ -172,12 +173,19 @@ export class TuyaDeviceRegistry {
   }
 }
 
-/** Build the full discovery payload: one entry per successfully-refreshed device. */
-export function buildDiscoveredDevices(gladys, registry) {
+/**
+ * Build the full discovery payload: one entry per successfully-refreshed
+ * device, named in the configured language, with one button per zone.
+ */
+export function buildDiscoveredDevices(gladys, registry, config = {}) {
   return registry
     .values()
     .filter((entry) => entry.localKey && entry.dpsByCode.size > 0)
-    .map((entry) => buildDiscoveredDevice(gladys, entry));
+    .map((entry) =>
+      buildDiscoveredDevice(gladys, entry, config.language, {
+        zones: zonesFor(config, entry.deviceId),
+      }),
+    );
 }
 
 /**
@@ -198,6 +206,6 @@ export async function reconcileConnections(gladys, config, registry) {
       logger.warn(`Skipping ${device.external_id}: incomplete Tuya data`);
       continue;
     }
-    connectDevice(gladys, device, config, entry);
+    connectDevice(gladys, device, config, entry, zonesFor(config, deviceId));
   }
 }

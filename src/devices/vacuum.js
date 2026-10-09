@@ -8,18 +8,18 @@
 //
 // This module owns:
 //   - buildDiscoveredDevice() — turns one cloud-known device + its schema
-//     into the discovery payload;
+//     into the discovery payload (features + one push button per zone);
 //   - a small connection registry (external_id -> local Tuya session + the
-//     feature<->DP translation tables for it), driven by the device
-//     lifecycle exactly like gladys-denon-avr's src/devices/avr.js;
-//   - onSetValue() / runTestConnectionAction(), dispatching to the local
-//     session when connected and falling back to a Tuya Cloud command
-//     otherwise (see "Cloud/local transport badge" in the SDK README —
-//     this is its worked Tuya example, reused here for real).
-//
-// Local sessions are push-driven (issueGetOnConnect + the device's own
-// pushed `dps` changes) — connectDevice() seeds the initial state, then
-// every update is republished as it arrives, no polling.
+//     feature<->DP translation tables for it + the last raw value of every
+//     DP), driven by the device lifecycle like gladys-denon-avr's
+//     src/devices/avr.js;
+//   - applyDps(): the ONE path every DP update goes through, local push or
+//     cloud (MQTT push of the Smart Life method, status poll of the Cloud API
+//     method): it publishes only the features that changed, in one batch,
+//     then tells the listener (src/events.js: scene triggers, widget nudges);
+//   - sendDpCommand() / onSetValue() / runTestConnectionAction(), sending to
+//     the local session when connected and falling back to a Tuya Cloud
+//     command otherwise (see "Cloud/local transport badge" in the SDK README).
 // -----------------------------------------------------------------------------
 
 import {
@@ -29,31 +29,42 @@ import {
   DEVICE_TRANSPORTS,
 } from '@gladysassistant/integration-sdk';
 import { createTuyaLocalClient } from '../tuya/local.js';
-import { buildKnownFeatures, DOCK_MODE_VALUES } from '../tuya/dpsSchema.js';
+import { buildKnownFeatures, commandDps, DOCK_MODE_VALUES } from '../tuya/dpsSchema.js';
+import { selectionFromReport } from '../tuya/sweeper.js';
+import { FEATURE_NAMES, TEXTS, pick } from '../i18n.js';
 
 export const DEVICE_TYPE = 'vacuum';
 
 const CONNECTION_FAILURE_THRESHOLD = 3;
+const ZONE_KEY_PREFIX = 'zone_';
 
 const logger = createLogger({ name: DEVICE_TYPE });
 
 // external_id -> {
-//   deviceId, local (client handle), cloud (TuyaCloudClient),
+//   deviceId, ip, local (client handle), cloud (TuyaCloudClient or the
+//   device-sharing client), transport ('local'|'cloud'),
 //   dpIdToFeatureKey: Map<string dpId, string featureKey>,
-//   featureKeyToDp: Map<string featureKey, { dpId: number, code: string }>,
-//   dockTargetDpId, dockValue,
-//   lastKnownState: Map<featureKey, unknown>,
+//   featureKeyToDp: Map<featureKey, { dpId, code, dpType, decode?, encode? }>,
+//   commands: commandDps() — dock/direction/command_trans/start/pause/seek/mode,
+//   dpsByCode, dockValue, zones: [{ name, slug, command }],
+//   values: Map<code, raw value>, lastKnownState: Map<featureKey, published>,
+//   lastSelection: the last room/zone selection the robot reported,
 // }
 const connections = new Map();
 
+// Told about every applied change (see applyDps()): src/events.js plugs the
+// scene triggers and widget nudges in here.
+let changeListener = null;
+
+/** Register the one listener applyDps() calls with each batch of changes. */
+export function onVacuumChange(listener) {
+  changeListener = listener;
+}
+
 // Stands in for `entry.local` while no LAN IP is known yet (UDP broadcast
-// found nothing, no manual override): always "disconnected", so onSetValue's
-// preferLocal-then-cloud logic falls straight through to the Tuya Cloud
-// command instead of connectDevice() skipping this device's connection
-// entry entirely — which used to leave onSetValue() with nothing in
-// `connections` at all, throwing "not connected" and never even trying the
-// cloud fallback the rest of this architecture promises. Stateless (no `ip`
-// to react to), so one shared instance is enough.
+// found nothing, no manual override): always "disconnected", so commands fall
+// straight through to the Tuya Cloud instead of throwing "not connected".
+// Stateless (no `ip` to react to), so one shared instance is enough.
 const NO_IP_LOCAL_CLIENT = {
   isConnected: () => false,
   async set() {
@@ -76,13 +87,9 @@ export function deviceIdOf(device) {
   return (device.params ?? []).find((p) => p.name === 'TUYA_DEVICE_ID')?.value;
 }
 
-/**
- * Whether `modeFeature`'s enum contains a "return to dock" value (see
- * DOCK_MODE_VALUES) — determines whether the VACUUM_CLEANER.DOCK convenience
- * feature below is built for this device at all.
- */
-function findDockValue(modeFeature) {
-  return modeFeature?.rawValues?.find((value) => DOCK_MODE_VALUES.includes(value));
+/** The feature key of a zone push button. */
+export function zoneFeatureKey(zone) {
+  return `${ZONE_KEY_PREFIX}${zone.slug}`;
 }
 
 /**
@@ -91,11 +98,17 @@ function findDockValue(modeFeature) {
  * @param {string} deviceExternalId
  * @param {Map<string, {dpId:number,type:string,values:object}>} dpsByCode
  * @param {'en'|'fr'} [language]
+ * @param {{ zones?: Array<{ name: string, slug: string }> }} [options]
  */
-export function buildFeatures(deviceExternalId, dpsByCode, language = 'en') {
+export function buildFeatures(deviceExternalId, dpsByCode, language = 'en', { zones = [] } = {}) {
   const known = buildKnownFeatures(dpsByCode, language);
+  const commands = commandDps(dpsByCode);
   const modeFeature = known.find((f) => f.code === 'mode');
-  const dockValue = findDockValue(modeFeature);
+  // `switch_charge` is the dedicated "go home" DP; older firmwares only have
+  // a dock-like value in the `mode` enum.
+  const dockValue = commands.dock
+    ? undefined
+    : modeFeature?.rawValues?.find((value) => DOCK_MODE_VALUES.includes(value));
 
   const features = known.map((f) => ({
     name: f.name,
@@ -115,12 +128,18 @@ export function buildFeatures(deviceExternalId, dpsByCode, language = 'en') {
   const featureKeyToDp = new Map();
   for (const f of known) {
     dpIdToFeatureKey.set(String(f.dpId), f.key);
-    featureKeyToDp.set(f.key, { dpId: f.dpId, code: f.code, dpType: dpsByCode.get(f.code)?.type });
+    featureKeyToDp.set(f.key, {
+      dpId: f.dpId,
+      code: f.code,
+      dpType: dpsByCode.get(f.code)?.type,
+      decode: f.decode,
+      encode: f.encode,
+    });
   }
 
-  if (dockValue !== undefined) {
+  if (commands.dock || dockValue !== undefined) {
     features.push({
-      name: 'Return to dock',
+      name: pick(FEATURE_NAMES.dock, language),
       external_id: featureExternalId(deviceExternalId, 'dock'),
       category: DEVICE_FEATURE_CATEGORIES.VACUUM_CLEANER,
       type: DEVICE_FEATURE_TYPES.VACUUM_CLEANER.DOCK,
@@ -132,19 +151,48 @@ export function buildFeatures(deviceExternalId, dpsByCode, language = 'en') {
     });
   }
 
-  return { features, dpIdToFeatureKey, featureKeyToDp, dockValue, modeDpId: modeFeature?.dpId };
+  // One push button per zone, only on a robot that takes zone commands.
+  const zoneList = commands.commandTrans ? zones : [];
+  for (const zone of zoneList) {
+    features.push({
+      name: `${pick(FEATURE_NAMES.zone, language)} - ${zone.name}`,
+      external_id: featureExternalId(deviceExternalId, zoneFeatureKey(zone)),
+      category: DEVICE_FEATURE_CATEGORIES.BUTTON,
+      type: DEVICE_FEATURE_TYPES.BUTTON.PUSH,
+      min: 0,
+      max: 1,
+      read_only: false,
+      has_feedback: false,
+      keep_history: false,
+    });
+  }
+
+  return {
+    features,
+    dpIdToFeatureKey,
+    featureKeyToDp,
+    dockValue,
+    modeDpId: modeFeature?.dpId,
+    commands,
+    zones: zoneList,
+  };
 }
 
-/** Build the discovery payload for one Tuya vacuum known through the cloud API. */
-export function buildDiscoveredDevice(gladys, { deviceId, name, dpsByCode, ip }, language = 'en') {
+/** Build the discovery payload for one Tuya vacuum. */
+export function buildDiscoveredDevice(
+  gladys,
+  { deviceId, name, dpsByCode, ip },
+  language = 'en',
+  { zones = [] } = {},
+) {
   const ids = gladys.externalIds(DEVICE_TYPE, deviceId);
-  const { features } = buildFeatures(ids.device, dpsByCode, language);
+  const { features } = buildFeatures(ids.device, dpsByCode, language, { zones });
   const params = [{ name: 'TUYA_DEVICE_ID', value: deviceId }];
   if (ip) {
     params.push({ name: 'IP_ADDRESS', value: ip });
   }
   return {
-    name: name || `Tuya vacuum (${deviceId})`,
+    name: name || `${pick(TEXTS.unknownDevice, language)} (${deviceId})`,
     external_id: ids.device,
     params,
     features,
@@ -183,8 +231,6 @@ export function formatIncomingValue(dpType, value) {
  * cloud APIs expect a real JSON boolean for a Boolean-typed DP — sending the
  * number as-is has been observed to make the device silently ignore the
  * command (a local `set()` timeout, or a cloud "network error:(2008)").
- * Value/Integer DPs already receive a number; Enum/String DPs already
- * receive the right string (the selected option's raw value).
  */
 export function formatOutgoingValue(dpType, value) {
   if (dpType === 'Boolean') {
@@ -196,11 +242,133 @@ export function formatOutgoingValue(dpType, value) {
   return value;
 }
 
-async function publishTransport(gladys, externalId, transport, extra = {}) {
+/** The value one feature publishes for a raw DP value, `undefined` to publish nothing. */
+function publishedValue(target, raw) {
+  if (target.decode) {
+    const decoded = target.decode(raw);
+    return decoded === undefined || Number.isNaN(decoded) ? undefined : decoded;
+  }
+  return formatIncomingValue(target.dpType, raw);
+}
+
+function sameValue(a, b) {
+  return a === b || (a?.text !== undefined && a?.text === b?.text);
+}
+
+async function publishTransport(gladys, entry, externalId, transport, extra = {}) {
+  if (entry) {
+    entry.transport = transport;
+  }
   try {
     await gladys.publishTransports([{ external_id: externalId, transport, ...extra }]);
   } catch (err) {
     logger.debug(`publishTransports failed for ${externalId}: ${err.message}`);
+  }
+}
+
+/**
+ * Apply DP values reported by the robot — local push or cloud — to one
+ * connection: remember every raw value, publish the features whose Gladys
+ * value changed (one publishStates() batch: the core caps states at 300 per
+ * minute and re-evaluates scenes on each), then hand the changed codes to
+ * the change listener.
+ * @param {Record<string, unknown>} dpsById raw values keyed by DP id
+ */
+export async function applyDps(gladys, externalId, dpsById) {
+  const entry = connections.get(externalId);
+  if (!entry) {
+    return;
+  }
+  const previous = new Map(entry.values);
+  const changedCodes = [];
+  const states = [];
+  for (const [dpIdString, raw] of Object.entries(dpsById ?? {})) {
+    const code = entry.codeByDpId?.get(dpIdString);
+    if (code !== undefined && entry.values.get(code) !== raw) {
+      entry.values.set(code, raw);
+      changedCodes.push(code);
+    }
+    const key = entry.dpIdToFeatureKey.get(dpIdString);
+    if (!key) {
+      continue; // A DP this integration doesn't map to a feature.
+    }
+    const value = publishedValue(entry.featureKeyToDp.get(key), raw);
+    if (value === undefined || sameValue(entry.lastKnownState.get(key), value)) {
+      continue;
+    }
+    entry.lastKnownState.set(key, value);
+    states.push({ device_feature_external_id: featureExternalId(externalId, key), state: value });
+  }
+
+  if (changedCodes.includes('command_trans')) {
+    const selection = selectionFromReport(entry.values.get('command_trans'));
+    if (selection) {
+      entry.lastSelection = selection;
+      const what =
+        selection.kind === 'rooms'
+          ? `rooms ${selection.roomIds.join('+')}`
+          : `${selection.zoneCount} drawn zone(s)`;
+      logger.info(
+        `${externalId}: the robot reports a selective clean (${what}). Name it with the "Memorize the last zone" action, or type it in the rooms field as Name=${selection.roomIds?.join('+') ?? '…'}`,
+      );
+    }
+  }
+
+  if (states.length > 0) {
+    try {
+      await gladys.publishStates(states);
+    } catch (err) {
+      logger.error(`publishStates failed for ${externalId}: ${err.message}`);
+    }
+  }
+  if (changedCodes.length > 0 && changeListener) {
+    try {
+      await changeListener(externalId, { changedCodes, previous, entry });
+    } catch (err) {
+      logger.error(`Change listener failed for ${externalId}: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Apply a cloud status (`{ code: value }` or `[{ code, value }]`) to the
+ * connection of one Tuya device, by translating codes to DP ids.
+ */
+export async function applyCloudStatus(gladys, deviceId, status) {
+  const pairs = Array.isArray(status)
+    ? status.map(({ code, value }) => [code, value])
+    : Object.entries(status ?? {});
+  for (const [externalId, entry] of connections) {
+    if (entry.deviceId !== deviceId) {
+      continue;
+    }
+    const dpsById = {};
+    for (const [code, value] of pairs) {
+      const dpId = entry.dpsByCode?.get(code)?.dpId;
+      if (dpId !== undefined) {
+        dpsById[String(dpId)] = value;
+      }
+    }
+    await applyDps(gladys, externalId, dpsById);
+  }
+}
+
+/**
+ * Read the cloud status of every vacuum whose local session is down (or
+ * absent) and apply it — the safety net under the Smart Life method's MQTT
+ * push, and the only state source of the Cloud API method without a LAN
+ * session. A vacuum whose local session is up is skipped: it pushes itself.
+ */
+export async function pollCloudStates(gladys) {
+  for (const [externalId, entry] of connections) {
+    if (entry.local.isConnected() || typeof entry.cloud?.getStatus !== 'function') {
+      continue;
+    }
+    try {
+      await applyCloudStatus(gladys, entry.deviceId, await entry.cloud.getStatus(entry.deviceId));
+    } catch (err) {
+      logger.debug(`Cloud status of ${externalId} failed: ${err.message}`);
+    }
   }
 }
 
@@ -223,19 +391,23 @@ export function resolveDeviceIp(device, config, registryEntry) {
  * Idempotent — a second call with the same registry entry is a no-op, a
  * call with an UPDATED local_key/ip re-applies it in place (see
  * src/devices/index.js's periodic refresh loop, which re-fetches the cloud
- * device to catch a rotated key and calls this again).
+ * device to catch a rotated key and calls this again). The zones are
+ * refreshed in place too: a zone learned or typed since works at once.
  *
  * @param {import('@gladysassistant/integration-sdk').GladysIntegration} gladys
  * @param {object} device the Gladys device
  * @param {object} config normalized integration config
  * @param {{ deviceId: string, localKey: string, ip?: string, version?: string,
- *   dpsByCode: Map, cloud: import('../tuya/cloud.js').TuyaCloudClient }} registryEntry
+ *   dpsByCode: Map, cloud: object, name?: string }} registryEntry
+ * @param {Array<object>} [zones] this vacuum's zones (src/zones.js#zonesFor)
  */
-export function connectDevice(gladys, device, config, registryEntry) {
+export function connectDevice(gladys, device, config, registryEntry, zones = []) {
   const existing = connections.get(device.external_id);
   const ip = resolveDeviceIp(device, config, registryEntry);
 
   if (existing) {
+    existing.name = device.name || registryEntry.name || existing.name;
+    existing.zones = existing.commands?.commandTrans ? zones : [];
     // Structure didn't change (dpsByCode is only re-applied on a fresh
     // discovery/Update, like any other integration) — just keep the local
     // session in sync with a possibly-rotated key/IP.
@@ -250,29 +422,34 @@ export function connectDevice(gladys, device, config, registryEntry) {
     }
   }
 
-  const { dpIdToFeatureKey, featureKeyToDp, dockValue, modeDpId } = buildFeatures(
-    device.external_id,
-    registryEntry.dpsByCode,
+  const tables = buildFeatures(device.external_id, registryEntry.dpsByCode, config.language, {
+    zones,
+  });
+  const codeByDpId = new Map(
+    [...registryEntry.dpsByCode].map(([code, dp]) => [String(dp.dpId), code]),
   );
 
   const entry = {
     deviceId: registryEntry.deviceId,
+    name: device.name || registryEntry.name,
     ip,
     local: null,
     cloud: registryEntry.cloud,
-    dpIdToFeatureKey,
-    featureKeyToDp,
-    dockValue,
-    modeDpId,
+    transport: 'cloud',
+    dpsByCode: registryEntry.dpsByCode,
+    codeByDpId,
+    ...tables,
+    values: new Map(),
     lastKnownState: new Map(),
+    lastSelection: undefined,
   };
+  delete entry.features;
 
   if (!ip) {
     // No LAN IP known yet (UDP broadcast + manual override both empty): still
-    // register the connection entry — with a no-op `local` — so onSetValue()
-    // and runTestConnectionAction() find it and use the Tuya Cloud command
-    // fallback instead of throwing "not connected". connectDevice() runs
-    // again (see src/devices/index.js's periodic refresh) once an IP becomes
+    // register the connection entry — with a no-op `local` — so commands use
+    // the Tuya Cloud fallback, and cloud states (src/cloudStates.js) reach
+    // it. connectDevice() runs again (periodic refresh) once an IP becomes
     // known, upgrading this to a real local session then.
     logger.warn(
       `No LAN IP known for ${device.external_id} yet (UDP broadcast + manual override both empty) — cloud-only for now`,
@@ -290,22 +467,13 @@ export function connectDevice(gladys, device, config, registryEntry) {
     reconnectIntervalSeconds: 10,
     onConnect: () => {
       logger.info(`${device.external_id}: local session connected (${ip})`);
-      publishTransport(gladys, device.external_id, DEVICE_TRANSPORTS.LOCAL);
+      publishTransport(gladys, entry, device.external_id, DEVICE_TRANSPORTS.LOCAL);
       gladys.setConnectionStatus(true).catch(() => {});
     },
     onData: (dps) => {
-      for (const [dpIdString, value] of Object.entries(dps)) {
-        const key = dpIdToFeatureKey.get(dpIdString);
-        if (!key) {
-          continue; // A DP this integration doesn't map to a feature — ignored.
-        }
-        entry.lastKnownState.set(key, value);
-        const id = featureExternalId(device.external_id, key);
-        const dpType = featureKeyToDp.get(key)?.dpType;
-        gladys
-          .publishState(id, formatIncomingValue(dpType, value))
-          .catch((err) => logger.error(`publishState failed for ${id}: ${err.message}`));
-      }
+      applyDps(gladys, device.external_id, dps).catch((err) =>
+        logger.error(`Applying the DPs of ${device.external_id} failed: ${err.message}`),
+      );
     },
     onDisconnect: (consecutiveFailures) => {
       if (consecutiveFailures < CONNECTION_FAILURE_THRESHOLD) {
@@ -313,7 +481,7 @@ export function connectDevice(gladys, device, config, registryEntry) {
       }
       // Degrade to the cloud command/status API rather than declaring the
       // device fully unreachable — see "Degraded state" in the SDK README.
-      publishTransport(gladys, device.external_id, DEVICE_TRANSPORTS.CLOUD, {
+      publishTransport(gladys, entry, device.external_id, DEVICE_TRANSPORTS.CLOUD, {
         degraded: true,
         message: {
           en: 'Local session unreachable, falling back to the Tuya cloud API.',
@@ -339,6 +507,16 @@ export function disconnectAllDevices() {
   }
 }
 
+/** The connection of one vacuum (read-only use: widgets, scene actions, zones). */
+export function getConnection(externalId) {
+  return connections.get(externalId);
+}
+
+/** Every connection, as `[externalId, entry]` pairs. */
+export function listConnections() {
+  return [...connections.entries()];
+}
+
 /** Best-effort Tuya Cloud command, used when the local session is down. */
 async function sendCloudCommand(entry, code, value) {
   if (!entry.cloud) {
@@ -348,8 +526,60 @@ async function sendCloudCommand(entry, code, value) {
 }
 
 /**
- * Dispatch a user command to the right device: local session when connected
- * and preferred (GLADYS_PREFER_LOCAL, default true), Tuya Cloud otherwise.
+ * Send one DP value to a vacuum: local session when connected and preferred
+ * (GLADYS_PREFER_LOCAL, default true), Tuya Cloud otherwise.
+ * @param {{ dpId: number, code: string }} target
+ */
+export async function sendDpCommand(gladys, externalId, target, value, config) {
+  const entry = connections.get(externalId);
+  if (!entry) {
+    throw new Error(`${externalId} is not connected`);
+  }
+  const preferLocal = config?.GLADYS_PREFER_LOCAL !== false;
+  if (preferLocal && entry.local.isConnected()) {
+    const ok = await entry.local.set(target.dpId, value);
+    if (ok) {
+      return 'local';
+    }
+    logger.warn(`Local set failed for ${externalId}:${target.code}, falling back to cloud`);
+  }
+
+  await sendCloudCommand(entry, target.code, value);
+  // Degraded unless the user deliberately turned off "prefer local"
+  // (GLADYS_PREFER_LOCAL: false) — that's the one case where routing
+  // through the cloud is the nominal, expected behavior rather than a
+  // fallback from a local failure.
+  await publishTransport(gladys, entry, externalId, DEVICE_TRANSPORTS.CLOUD, {
+    degraded: preferLocal,
+  });
+  return 'cloud';
+}
+
+/** Send the robot home: `switch_charge` when it has one, the dock value of `mode` otherwise. */
+export async function returnToDock(gladys, externalId, config) {
+  const entry = connections.get(externalId);
+  if (entry?.commands?.dock) {
+    return sendDpCommand(gladys, externalId, entry.commands.dock, true, config);
+  }
+  const mode = entry?.featureKeyToDp.get('mode');
+  if (entry?.dockValue === undefined || !mode) {
+    throw new Error('This vacuum has no "return to dock" command');
+  }
+  return sendDpCommand(gladys, externalId, mode, entry.dockValue, config);
+}
+
+/** Send one zone's room/zone command on the robot's `command_trans` DP. */
+export async function cleanZone(gladys, externalId, zone, config) {
+  const entry = connections.get(externalId);
+  if (!entry?.commands?.commandTrans) {
+    throw new Error('This vacuum takes no room or zone command (no command_trans DP)');
+  }
+  return sendDpCommand(gladys, externalId, entry.commands.commandTrans, zone.command, config);
+}
+
+/**
+ * Dispatch a Gladys command (a feature value set from the dashboard, a scene
+ * or a widget's device_feature button) to the right DP.
  */
 export async function onSetValue(gladys, { device, feature, value, config }) {
   const entry = connections.get(device.external_id);
@@ -359,34 +589,25 @@ export async function onSetValue(gladys, { device, feature, value, config }) {
 
   const key = feature.external_id.slice(device.external_id.length + 1);
 
-  // The synthetic "Return to dock" feature has no DP of its own: it sends
-  // the dock-like value of the `mode` enum (see findDockValue() above).
-  const isDockFeature = key === 'dock' && entry.dockValue !== undefined;
-  const target = isDockFeature ? entry.featureKeyToDp.get('mode') : entry.featureKeyToDp.get(key);
+  if (key === 'dock') {
+    await returnToDock(gladys, device.external_id, config);
+    return;
+  }
+  if (key.startsWith(ZONE_KEY_PREFIX)) {
+    const zone = (entry.zones ?? []).find((z) => zoneFeatureKey(z) === key);
+    if (!zone) {
+      throw new Error(`Zone "${key.slice(ZONE_KEY_PREFIX.length)}" is no longer configured`);
+    }
+    await cleanZone(gladys, device.external_id, zone, config);
+    return;
+  }
+
+  const target = entry.featureKeyToDp.get(key);
   if (!target) {
     throw new Error(`Feature "${key}" is not controllable on this device`);
   }
-  const dpValue = isDockFeature ? entry.dockValue : formatOutgoingValue(target.dpType, value);
-
-  const preferLocal = config?.GLADYS_PREFER_LOCAL !== false;
-  const localReady = entry.local.isConnected();
-
-  if (preferLocal && localReady) {
-    const ok = await entry.local.set(target.dpId, dpValue);
-    if (ok) {
-      return;
-    }
-    logger.warn(`Local set failed for ${device.external_id}:${key}, falling back to cloud`);
-  }
-
-  await sendCloudCommand(entry, target.code, dpValue);
-  // Degraded unless the user deliberately turned off "prefer local"
-  // (GLADYS_PREFER_LOCAL: false) — that's the one case where routing
-  // through the cloud is the nominal, expected behavior rather than a
-  // fallback from a local failure.
-  await publishTransport(gladys, device.external_id, DEVICE_TRANSPORTS.CLOUD, {
-    degraded: preferLocal,
-  });
+  const dpValue = target.encode ? target.encode(value) : formatOutgoingValue(target.dpType, value);
+  await sendDpCommand(gladys, device.external_id, target, dpValue, config);
 }
 
 /** `test_connection` manifest action: report the local session + last known state. */
@@ -400,7 +621,7 @@ export async function runTestConnectionAction(gladys, { fields }) {
 
   const localConnected = entry.local.isConnected();
   const state = [...entry.lastKnownState.entries()]
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${value?.text ?? value}`)
     .join(', ');
 
   if (!localConnected) {
@@ -436,9 +657,18 @@ export async function runTestConnectionAction(gladys, { fields }) {
 /** Test-only hook: drop every registered connection between tests. */
 export function __clearConnectionsForTesting() {
   connections.clear();
+  changeListener = null;
 }
 
 /** Test-only hook: inject a fake connection registry entry. Not used by production code. */
 export function __setConnectionForTesting(externalId, entry) {
-  connections.set(externalId, entry);
+  connections.set(externalId, {
+    values: new Map(),
+    lastKnownState: new Map(),
+    dpIdToFeatureKey: new Map(),
+    featureKeyToDp: new Map(),
+    commands: {},
+    zones: [],
+    ...entry,
+  });
 }

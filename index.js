@@ -11,9 +11,12 @@
 //      Tuya Cloud API — plus a mediated UDP broadcast scan, on a timer; this
 //      is what catches a rotated local_key (see the README) before it locks
 //      a local session out;
-//   3. registers the event handlers BEFORE connect();
+//   3. registers the event handlers BEFORE connect(): discovery, commands,
+//      the dashboard widgets and scene actions (Gladys 5.1+), the manifest
+//      actions (test, memorize / forget a zone);
 //   4. connects/reconciles the local session of every vacuum the user
-//      already created.
+//      already created, and keeps their states flowing when no LAN session
+//      is up: Tuya MQTT push relayed by the bridge + a cloud status poll.
 //
 // Environment variables provided by the Gladys supervisor to the container:
 //   - GLADYS_HOST_API_URL         (host API URL)
@@ -39,13 +42,35 @@ import {
   reconcileConnections,
 } from './src/devices/index.js';
 import {
+  applyCloudStatus,
   connectDevice,
   disconnectDevice,
   disconnectAllDevices,
   deviceIdOf,
+  getConnection,
+  listConnections,
   onSetValue as dispatchSetValue,
+  onVacuumChange,
+  pollCloudStates,
   runTestConnectionAction,
 } from './src/devices/vacuum.js';
+import { createChangeListener } from './src/events.js';
+import {
+  WIDGET,
+  emptyContent,
+  resolveWidgetVacuum,
+  widgetCommand,
+  widgetContent,
+  widgetToast,
+} from './src/widgets.js';
+import { SCENE_ACTION, runCleanZone, runStartCleaning, runWidgetCommand } from './src/scenes.js';
+import {
+  LEARNED_ZONES_CONFIG_KEY,
+  findZone,
+  withLearnedZone,
+  zoneName,
+  zonesFor,
+} from './src/zones.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,12 +81,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // container restart without asking the user to scan the QR again.
 const SHARING_SESSION_CONFIG_KEY = 'tuya_sharing_session';
 const QR_LOGIN_ACTION_KEY = 'tuya_qr_login';
+// How often a vacuum without a live LAN session gets its cloud status read.
+const CLOUD_POLL_INTERVAL_MS = 60_000;
 
 const gladys = new GladysIntegration();
 
 const bridge = new PythonBridge({
   logger,
   scriptPath: path.join(__dirname, 'bridge', 'tuya_bridge.py'),
+  // Live updates pushed by Tuya's MQTT broker (Smart Life method), relayed
+  // by the bridge: the state source of a vacuum without a LAN session.
+  onEvent: (event) => {
+    if (event.event === 'status' && event.device_id) {
+      applyCloudStatus(gladys, event.device_id, event.status).catch((err) =>
+        logger.error(`Applying a pushed status failed: ${err.message}`),
+      );
+    }
+  },
+  // A respawned bridge has lost the session: replay it before anything else.
+  onSpawn: () => sharing.restoreAfterRespawn(),
 });
 const sharing = new TuyaDeviceSharingClient({ bridge });
 const registry = new TuyaDeviceRegistry({ sharing });
@@ -69,6 +107,7 @@ const registry = new TuyaDeviceRegistry({ sharing });
 let config = normalizeConfig();
 let cloud = null;
 let refreshTimer = null;
+let cloudPollTimer = null;
 // Tracked separately from `config` (which is wholesale-replaced on every
 // onConfigUpdated/'connected') so a same-credentials refresh never needlessly
 // throws away the registry's cache — only an actual credentials change does.
@@ -86,6 +125,15 @@ function stopRefreshTimer() {
     clearInterval(refreshTimer);
     refreshTimer = null;
   }
+}
+
+function startCloudPoll() {
+  if (cloudPollTimer) {
+    return;
+  }
+  cloudPollTimer = setInterval(() => {
+    pollCloudStates(gladys).catch((err) => logger.debug(`Cloud poll failed: ${err.message}`));
+  }, CLOUD_POLL_INTERVAL_MS);
 }
 
 function scheduleRefreshTimer() {
@@ -149,9 +197,14 @@ async function refreshAndReconcile({ forceDiscovery }) {
   await resyncSharingSession();
 
   if (forceDiscovery) {
-    await gladys.publishDiscoveredDevices(buildDiscoveredDevices(gladys, registry));
+    await gladys.publishDiscoveredDevices(buildDiscoveredDevices(gladys, registry, config));
   }
   await reconcileConnections(gladys, config, registry);
+  if (config.roomErrors.length > 0) {
+    logger.warn(`Ignored malformed rooms entries: ${config.roomErrors.join(' | ')}`);
+  }
+  // Seed the states of vacuums without a LAN session right away.
+  await pollCloudStates(gladys);
 
   const ready = registry.values().some((entry) => entry.localKey && entry.dpsByCode.size > 0);
   if (ready) {
@@ -188,6 +241,89 @@ gladys.onSetValue(async (device, feature, value) => {
 
 // --- Manifest action: test the connection -------------------------------------
 gladys.onAction('test_connection', (fields) => runTestConnectionAction(gladys, { fields }));
+
+// --- Manifest actions: memorize / forget a zone (see src/zones.js) -------------
+async function saveLearnedZones(learnedZones) {
+  await gladys.setConfig({ [LEARNED_ZONES_CONFIG_KEY]: JSON.stringify(learnedZones) });
+  config = { ...config, learnedZones };
+  // New zone buttons: re-publish discovery ("Update" in the Discovery tab).
+  await refreshAndReconcile({ forceDiscovery: true });
+}
+
+gladys.onAction('learn_zone', async (fields) => {
+  const entry = getConnection(fields.device);
+  if (!entry) {
+    throw new Error('This vacuum is not connected yet.');
+  }
+  if (!entry.commands?.commandTrans) {
+    throw new Error('This vacuum takes no room or zone command (no command_trans DP).');
+  }
+  const name = zoneName(fields.name);
+  if (!name) {
+    throw new Error('Give the zone a name (letters or digits).');
+  }
+  const selection = entry.lastSelection;
+  if (!selection) {
+    throw new Error(
+      'No room or zone clean seen since the integration started: start one from the Smart Life app first, then run this action again.',
+    );
+  }
+  await saveLearnedZones(
+    withLearnedZone(config.learnedZones, entry.deviceId, name, selection.command),
+  );
+  const what = selection.kind === 'rooms' ? selection.roomIds.join('+') : `${selection.zoneCount}`;
+  return {
+    en: `Zone "${name}" memorized (${selection.kind === 'rooms' ? `rooms ${what}` : `${what} drawn zone(s)`}). Click "Update" on the vacuum in the Discovery tab to get its button.`,
+    fr: `Zone « ${name} » mémorisée (${selection.kind === 'rooms' ? `pièces ${what}` : `${what} zone(s) dessinée(s)`}). Cliquez sur « Mettre à jour » sur l'aspirateur dans l'onglet Découverte pour obtenir son bouton.`,
+  };
+});
+
+gladys.onAction('forget_zone', async (fields) => {
+  const entry = getConnection(fields.device);
+  if (!entry) {
+    throw new Error('This vacuum is not connected yet.');
+  }
+  const memorized = zonesFor(config, entry.deviceId).filter((zone) => zone.learned);
+  const zone = findZone(memorized, fields.name);
+  if (!zone) {
+    const names = memorized.map((z) => z.name).join(', ') || '(none)';
+    throw new Error(
+      `No memorized zone "${fields.name}". Memorized: ${names}. Zones typed in the rooms field are removed there.`,
+    );
+  }
+  await saveLearnedZones(withLearnedZone(config.learnedZones, entry.deviceId, zone.name, null));
+  return { en: `Zone "${zone.name}" forgotten.`, fr: `Zone « ${zone.name} » oubliée.` };
+});
+
+// --- Dashboard widgets (Gladys 5.1+) -------------------------------------------
+for (const widgetKey of Object.values(WIDGET)) {
+  gladys.onWidgetGet(widgetKey, async ({ settings, language }) => {
+    const { externalId, entry, reason } = resolveWidgetVacuum(settings, listConnections());
+    if (!entry) {
+      return emptyContent(reason);
+    }
+    return widgetContent(widgetKey, externalId, entry, settings || {}, language);
+  });
+  // Every widget shares one dispatcher: only widgetCommand()'s commands pass.
+  gladys.onWidgetAction(widgetKey, async (actionKey, params) => {
+    const command = widgetCommand(actionKey, params);
+    if (!command) {
+      throw new Error(`Unsupported widget action: ${actionKey}`);
+    }
+    logger.info(`Widget action ${actionKey} (${command.kind}) for ${command.vacuum}`);
+    const label = await runWidgetCommand(gladys, command, config);
+    return widgetToast(command, { label });
+  });
+}
+
+// --- Scene actions (Gladys 5.1+) -----------------------------------------------
+gladys.onSceneAction(SCENE_ACTION.START_CLEANING, (fields) =>
+  runStartCleaning(gladys, fields, config),
+);
+gladys.onSceneAction(SCENE_ACTION.CLEAN_ZONE, (fields) => runCleanZone(gladys, fields, config));
+
+// Scene triggers + widget nudges, from every applied DP change.
+onVacuumChange(createChangeListener({ gladys, getLanguage: () => config.language }));
 
 // --- "Simple" method: QR / device-sharing login, no developer account --------
 // account_link never redirects back (see the SDK README): this resolves the
@@ -255,7 +391,7 @@ gladys.onDeviceCreated(async (device) => {
     return;
   }
   logger.info(`Device created -> connecting ${device.external_id}`);
-  connectDevice(gladys, device, config, entry);
+  connectDevice(gladys, device, config, entry, zonesFor(config, deviceId));
 });
 
 gladys.onDeviceDeleted(async (device) => {
@@ -298,6 +434,7 @@ gladys.on('connected', async () => {
 
     await refreshAndReconcile({ forceDiscovery: false });
     scheduleRefreshTimer();
+    startCloudPoll();
   } catch (err) {
     logger.error('Post-connection initialization failed', err);
     await gladys
@@ -319,6 +456,7 @@ gladys.on('disconnected', () => {
 gladys.handleShutdown((signal) => {
   logger.info(`Received ${signal} -> graceful shutdown`);
   stopRefreshTimer();
+  clearInterval(cloudPollTimer);
   disconnectAllDevices();
   bridge.stop();
 });

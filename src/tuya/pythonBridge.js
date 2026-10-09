@@ -8,7 +8,13 @@
 // docstring. This module owns spawning that process, keeping it alive
 // across the integration's lifetime, and speaking its line-delimited JSON
 // protocol on stdin/stdout: one `{"id", "cmd", ...}` request per line in,
-// one `{"id", "ok", "result"|"error"}` response per line out.
+// one `{"id", "ok", "result"|"error"}` response per line out — plus, with no
+// `id`, the live device updates the bridge relays from Tuya's MQTT push
+// (`{"event": "status"|"online"|..., "device_id", ...}`), handed to `onEvent`.
+//
+// The Python process keeps the Smart Life session in memory: if it dies and
+// is respawned by the next call, `onSpawn` runs first — synchronously, so
+// whatever it writes (a session restore) reaches stdin before that call.
 // -----------------------------------------------------------------------------
 
 import { spawn } from 'node:child_process';
@@ -21,6 +27,8 @@ export class PythonBridge {
     logger,
     scriptPath,
     pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python3',
+    onEvent,
+    onSpawn,
   }) {
     this.logger = logger;
     this.scriptPath = scriptPath;
@@ -28,6 +36,9 @@ export class PythonBridge {
     this.process = null;
     this.pending = new Map(); // request id -> { resolve, reject }
     this.nextId = 1;
+    this.onEvent = onEvent;
+    this.onSpawn = onSpawn;
+    this.spawnCount = 0;
   }
 
   start() {
@@ -47,6 +58,15 @@ export class PythonBridge {
     child.on('error', (err) => {
       this.logger.error('Failed to start the Tuya bridge process', err);
     });
+
+    this.spawnCount += 1;
+    if (this.spawnCount > 1 && this.onSpawn) {
+      try {
+        this.onSpawn();
+      } catch (err) {
+        this.logger.warn(`Bridge respawn hook failed: ${err.message}`);
+      }
+    }
 
     child.on('exit', (code, signal) => {
       this.logger.warn(`Tuya bridge process exited (code=${code}, signal=${signal})`);
@@ -88,6 +108,14 @@ export class PythonBridge {
       message = JSON.parse(line);
     } catch {
       this.logger.warn(`Non-JSON line from the Tuya bridge: ${line}`);
+      return;
+    }
+    if (message.event && message.id === undefined) {
+      try {
+        this.onEvent?.(message);
+      } catch (err) {
+        this.logger.warn(`Bridge event handler failed: ${err.message}`);
+      }
       return;
     }
     const pending = this.pending.get(message.id);

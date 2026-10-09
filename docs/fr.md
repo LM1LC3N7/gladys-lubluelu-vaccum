@@ -30,19 +30,91 @@ le revérifie donc périodiquement en arrière-plan (quelle que soit la méthode
 jamais à refaire la configuration pour cette raison.
 
 Ces fonctionnalités apparaissent par aspirateur, automatiquement adaptées à ce que votre appareil
-signale réellement (tous les aspirateurs n'ont pas toutes ces fonctions) :
+signale réellement (tous les aspirateurs n'ont pas toutes ces fonctions). Leurs noms sont en
+français ou en anglais selon le champ **Langue des noms d'appareil** (Gladys garde le nom donné
+à l'ajout de l'appareil) :
 
-- **Power** — marche/pause du nettoyage en cours.
-- **Mode** — un menu déroulant (Intelligent, Le long des murs, Zone ciblée, Pièce unique,
+- **État** — ce que fait le robot : en nettoyage, en pause, retour à la base, en charge, sur la
+  base, arrêté, en erreur. Gladys l'affiche en badge, et il peut déclencher une scène (« quand
+  l'aspirateur est revenu sur sa base »).
+- **Marche** / **Pause** — lancer, arrêter ou mettre en pause le nettoyage en cours.
+- **Mode** — un menu déroulant (Intelligent, Le long des murs, Zone ciblée, Pièces choisies,
   Serpillière, Retour à la base...).
-- **Return to dock** — un bouton en un clic, affiché uniquement si la liste des modes de votre
-  aspirateur contient une valeur « retour à la base ».
-- **Water level** — débit d'eau de la serpillière, si votre aspirateur a une fonction de lavage.
-- **Suction power** — si votre aspirateur signale un niveau d'aspiration.
-- **Battery** — lecture seule, 0-100 %.
-- **Fault code** — lecture seule, 0 en fonctionnement normal.
-- **Find robot** — fait biper l'aspirateur, si pris en charge.
-- **Roll brush / Side brush / Filter** — usure restante, si votre aspirateur la signale.
+- **Retour à la base** — un bouton en un clic.
+- **Débit d'eau** — débit de la serpillière, si votre aspirateur a une fonction de lavage.
+- **Puissance d'aspiration** — si votre aspirateur signale un niveau d'aspiration.
+- **Batterie** — lecture seule, 0-100 %.
+- **Surface nettoyée / Durée de nettoyage** — du nettoyage en cours ou du dernier, et leurs
+  totaux.
+- **Code de défaut** — lecture seule, 0 en fonctionnement normal.
+- **Localiser le robot** — fait biper l'aspirateur, si pris en charge.
+- **Brosse principale / Brosse latérale / Filtre / Serpillière** — durée de vie restante, et un
+  bouton **Réinitialiser** pour chacune après remplacement de la pièce.
+- **Ne pas déranger** — si votre aspirateur a des heures silencieuses.
+- **Zone - …** — un bouton par zone de nettoyage (voir « Zones de nettoyage » ci-dessous).
+
+Nécessite **Gladys 5.1** ou plus récent.
+
+## Widgets du tableau de bord
+
+Ajoutez-les depuis l'éditeur du tableau de bord (**Ajouter un widget**, puis cette intégration).
+Chacun affiche l'aspirateur choisi dans ses réglages, ou le premier. Ils complètent la boîte
+**Appareils** du cœur, qui reste l'endroit de tous les réglages (menus, interrupteurs) :
+
+- **Aspirateur robot** — le robot d'un coup d'œil : batterie, état, programme, aspiration, eau,
+  surface et durée du nettoyage en cours, défaut en rouge, liaison locale ou cloud ; et les
+  touches du quotidien de sa télécommande : **Démarrer** (ou **Pause** / **Reprendre**, selon
+  l'état), **Retour base**, **Localiser**, **Arrêter**.
+- **Nettoyage express** — jusqu'à quatre nettoyages en un geste, pour une tablette murale. Chaque
+  bouton est un programme (_intelligent_, _bords_, _ciblé_, _serpillière_) ou un nom de zone,
+  saisi dans les réglages du widget. Vide, il propose les programmes puis les zones de
+  l'aspirateur. Le programme en cours est coché.
+- **Télécommande aspirateur** — pilotage manuel : avancer, tourner à gauche, à droite, stop, avec
+  l'état et la batterie. Seulement sur les aspirateurs qui acceptent la commande de direction ;
+  gardez le robot en vue.
+- **Entretien aspirateur** — la durée de vie restante de chaque pièce en jauges, la plus usée
+  d'abord, et une touche de remise à zéro (avec confirmation) pour chaque pièce usée, une fois
+  remplacée.
+
+## Scènes
+
+Déclencheurs (**Quand…** dans une scène) :
+
+- **Aspirateur : nettoyage terminé** — le robot a fini un nettoyage et regagné sa base. Transmet
+  la surface, la durée et la batterie aux actions suivantes (pour un message comme « Nettoyage
+  terminé : {{area_m2}} m² en {{duration_min}} min »).
+- **Aspirateur : erreur** — le robot signale un défaut (bloqué, roue, brosse, bac...), avec sa
+  description.
+- **Aspirateur : pièce usée** — la durée de vie restante d'une pièce est passée sous 10 %.
+
+L'**État** du robot est aussi un état d'appareil classique, utilisable comme déclencheur.
+
+Actions (**Alors…**) :
+
+- **Aspirateur : lancer un nettoyage** — programme, aspiration et débit d'eau appliqués ensemble,
+  puis départ : une carte au lieu de trois. _Inchangé_ garde le réglage actuel du robot.
+- **Aspirateur : nettoyer une zone** — nettoyer une zone par son nom.
+
+## Zones de nettoyage (robots LiDAR)
+
+Sur les robots qui nettoient pièce par pièce (robots LiDAR avec des pièces dans l'app Smart
+Life), Gladys peut envoyer le robot nettoyer une pièce, plusieurs pièces, ou une zone dessinée
+dans l'app :
+
+1. **Le plus simple — la mémoriser depuis l'app.** Lancez une fois le nettoyage de la pièce ou de
+   la zone depuis l'app Smart Life, pendant que l'intégration tourne. Puis, dans l'écran de
+   configuration de l'intégration, lancez **Mémoriser la dernière zone** : choisissez
+   l'aspirateur, donnez un nom (« Cuisine »). Gladys peut ensuite la relancer à tout moment.
+2. **Ou saisissez les pièces par numéro**, dans **Pièces par numéro (avancé)** :
+   `Cuisine=2, Salon=0+1, Chambres=3+4x2` (`+` pour plusieurs pièces, `x2` pour deux passages).
+   Les numéros sont ceux du robot : l'intégration les journalise à chaque nettoyage de pièce
+   lancé depuis l'app.
+
+Ouvrez ensuite l'onglet **Découverte** et cliquez sur **Mettre à jour** sur l'aspirateur : chaque
+zone reçoit son bouton **Zone - …**, utilisable depuis le tableau de bord, le widget
+**Nettoyage express** et l'action de scène **Aspirateur : nettoyer une zone**. **Oublier une zone
+mémorisée** en retire une. Refaire la carte du logement dans l'app peut renuméroter les pièces :
+mémorisez à nouveau les zones après une nouvelle carte.
 
 ## Prérequis
 
@@ -112,6 +184,13 @@ c'est une limite du micrologiciel de l'aspirateur lui-même, pas quelque chose q
 intégration peut contourner.
 
 ## Dépannage
+
+- **« No room or zone clean seen since the integration started »** en mémorisant une zone :
+  lancez le nettoyage de pièce/zone depuis l'app Smart Life _après_ le démarrage de
+  l'intégration, attendez quelques secondes, puis relancez l'action. Si l'erreur persiste, votre
+  robot ne signale pas sa sélection de pièces : saisissez les pièces par numéro.
+- **Un bouton de zone ne fait rien** : les numéros de pièces ont pu changer après une nouvelle
+  carte dans l'app — mémorisez à nouveau la zone.
 
 - **« Entrez d'abord votre code utilisateur Smart Life » alors qu'il est bien rempli** : le
   formulaire n'a pas été **enregistré** avant de cliquer sur le bouton de connexion — ce sont deux

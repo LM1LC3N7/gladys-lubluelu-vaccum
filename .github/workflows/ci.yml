@@ -20,8 +20,10 @@
 #      `quality` alone and is only ever actually built the day someone cuts a
 #      release — this catches it on every PR instead.
 #
-# Runs on Node 22, the version the Docker image ships with (see the
-# Dockerfile), so the check exercises the exact runtime the integration runs on.
+# Runs on the Node version pinned in `.nvmrc` — the same major the Docker
+# image ships with (test/runtime.test.js fails if the Dockerfile's `FROM
+# node:<major>-alpine` drifts from it, or moves to an odd-numbered, never-LTS
+# major), so the check exercises the exact runtime the integration runs on.
 # -----------------------------------------------------------------------------
 name: CI
 
@@ -30,6 +32,11 @@ on:
     branches:
       - main
   pull_request:
+
+# Read-only token: no job here writes anything (the docker job builds without
+# pushing), so don't inherit the repository's default token permissions.
+permissions:
+  contents: read
 
 jobs:
   quality:
@@ -42,7 +49,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies

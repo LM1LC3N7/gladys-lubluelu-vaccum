@@ -26,8 +26,13 @@ only say which registered app the login belongs to.
 
 Protocol: one JSON object per line on stdin, e.g. {"id": 1, "cmd": "qr_start",
 "user_code": "..."}. One JSON object per line on stdout, either
-{"id": 1, "ok": true, "result": ...} or {"id": 1, "ok": false, "error": "..."}.
-All logging goes to stderr - stdout is reserved for protocol responses only.
+{"id": 1, "ok": true, "result": ...} or {"id": 1, "ok": false, "error": "..."},
+or - unsolicited, no "id" - a live device update pushed by Tuya's MQTT
+broker once `discover` ran: {"event": "status", "device_id": "...",
+"status": {"code": value, ...}} or {"event": "online", "device_id": "...",
+"online": true}. That push is what keeps Gladys up to date when no LAN
+session is open (no LAN IP known, or the local session is down).
+All logging goes to stderr - stdout is reserved for the protocol only.
 """
 
 from __future__ import annotations
@@ -36,10 +41,11 @@ import json
 import logging
 import os
 import sys
+import threading
 import traceback
 from typing import Any
 
-from tuya_sharing import LoginControl, Manager, SharingTokenListener
+from tuya_sharing import LoginControl, Manager, SharingDeviceListener, SharingTokenListener
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -62,6 +68,17 @@ QR_URL_SCHEME = os.environ.get("TUYA_QR_SCHEME", "smartlife")
 
 TOKEN_FIELDS = ("t", "uid", "expire_time", "access_token", "refresh_token")
 
+# stdout is written from two threads: the request loop, and the SDK's MQTT
+# thread (live updates) - one lock keeps every line whole.
+_stdout_lock = threading.Lock()
+
+
+def _write(message: dict[str, Any]) -> None:
+    line = json.dumps(message, default=str) + "\n"
+    with _stdout_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
 
 class BridgeState:
     """Holds the single active Manager (one Tuya account) and its session."""
@@ -69,6 +86,38 @@ class BridgeState:
     def __init__(self) -> None:
         self.manager: Manager | None = None
         self.session: dict[str, Any] | None = None
+        self.push_started = False
+
+    def replace_manager(self, manager: Manager | None, session: dict[str, Any] | None) -> None:
+        """Swap the active account, stopping the previous one's MQTT push."""
+        if self.manager is not None and getattr(self.manager, "mq", None) is not None:
+            try:
+                self.manager.mq.stop()
+            except Exception:  # best effort on the way out
+                logger.debug("Stopping the previous MQTT push failed", exc_info=True)
+        self.manager = manager
+        self.session = session
+        self.push_started = False
+
+
+class _StatusForwarder(SharingDeviceListener):
+    """Relays the SDK's live device updates (Tuya MQTT push) to Node as
+    unsolicited event lines - see the module docstring."""
+
+    def update_device(
+        self, device: Any, updated_status_properties: list[str] | None = None, dp_timestamps: dict | None = None
+    ) -> None:
+        if updated_status_properties:
+            status = {code: device.status.get(code) for code in updated_status_properties}
+            _write({"event": "status", "device_id": device.id, "status": status})
+        else:
+            _write({"event": "online", "device_id": device.id, "online": bool(device.online)})
+
+    def add_device(self, device: Any) -> None:
+        _write({"event": "added", "device_id": device.id})
+
+    def remove_device(self, device_id: str) -> None:
+        _write({"event": "removed", "device_id": device_id})
 
 
 class _TokenSaver(SharingTokenListener):
@@ -92,7 +141,7 @@ state = BridgeState()
 
 
 def _build_manager(session: dict[str, Any]) -> Manager:
-    return Manager(
+    manager = Manager(
         session.get("client_id", CLIENT_ID),
         session["user_code"],
         session["terminal_id"],
@@ -100,6 +149,24 @@ def _build_manager(session: dict[str, Any]) -> Manager:
         session["token_info"],
         _TokenSaver(state),
     )
+    manager.add_device_listener(_StatusForwarder())
+    return manager
+
+
+def _start_push() -> None:
+    """Subscribe to Tuya's MQTT push for every device of the account, once
+    per account. refresh_mq() only covers devices flagged `set_up` (Home
+    Assistant flags them after creating its entities): every device here."""
+    if state.manager is None or state.push_started:
+        return
+    for device in state.manager.device_map.values():
+        device.set_up = True
+    try:
+        state.manager.refresh_mq()
+        state.push_started = True
+        logger.info("Live updates (Tuya MQTT push) started")
+    except Exception as exc:  # noqa: BLE001 - push is a bonus, polling still works
+        logger.warning("Could not start the Tuya MQTT push: %s", exc)
 
 
 def cmd_qr_start(params: dict[str, Any]) -> dict[str, Any]:
@@ -131,8 +198,7 @@ def cmd_qr_poll(params: dict[str, Any]) -> dict[str, Any]:
         "endpoint": result.get("endpoint") or result.get("end_point"),
         "token_info": {k: result.get(k) for k in TOKEN_FIELDS},
     }
-    state.manager = _build_manager(session)
-    state.session = session
+    state.replace_manager(_build_manager(session), session)
     logger.info("Device sharing login succeeded for user_code=%s", params["user_code"])
     return {"status": "success", "session": session}
 
@@ -141,8 +207,7 @@ def cmd_restore_session(params: dict[str, Any]) -> dict[str, Any]:
     """Rebuild the Manager from a session Node persisted (gladys.setConfig)
     across a container restart — no fresh QR scan needed."""
     session = params["session"]
-    state.manager = _build_manager(session)
-    state.session = session
+    state.replace_manager(_build_manager(session), session)
     return {"success": True}
 
 
@@ -153,15 +218,18 @@ def cmd_get_session(_params: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def cmd_logout(_params: dict[str, Any]) -> dict[str, Any]:
-    state.manager = None
-    state.session = None
+    state.replace_manager(None, None)
     return {"success": True}
 
 
 def _serialize_device(device: Any) -> dict[str, Any]:
     dps_by_code: dict[str, Any] = {}
     for dp_id, strategy in (device.local_strategy or {}).items():
-        code = strategy["status_code"]
+        code = strategy.get("status_code") if isinstance(strategy, dict) else None
+        if not code:
+            # One odd DP must not fail the discovery of every device.
+            logger.debug("Skipping DP %s of %s: no status_code", dp_id, device.id)
+            continue
         spec = device.status_range.get(code) or device.function.get(code)
         dps_by_code[code] = {
             "dpId": dp_id,
@@ -184,8 +252,14 @@ def cmd_discover(_params: dict[str, Any]) -> list[dict[str, Any]]:
     if state.manager is None:
         raise RuntimeError("No active device-sharing session: call qr_start/qr_poll or restore_session first")
     state.manager.update_device_cache()
-    devices = [_serialize_device(d) for d in state.manager.device_map.values()]
+    devices = []
+    for device in state.manager.device_map.values():
+        try:
+            devices.append(_serialize_device(device))
+        except Exception as exc:  # noqa: BLE001 - skip one device, keep the others
+            logger.error("Could not read device %s: %s", getattr(device, "id", "?"), exc)
     logger.info("Discovered %d device(s) via device sharing", len(devices))
+    _start_push()
     return devices
 
 
@@ -248,8 +322,7 @@ def handle_request(line: str) -> None:
             logger.error("Command %s failed: %s\n%s", cmd, exc, traceback.format_exc())
             response = {"id": request_id, "ok": False, "error": str(exc)}
 
-    sys.stdout.write(json.dumps(response) + "\n")
-    sys.stdout.flush()
+    _write(response)
 
 
 def main() -> None:

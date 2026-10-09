@@ -8,7 +8,7 @@
   },
   "version": "0.2.6",
   "docker_image": "ghcr.io/lm1lc3n7/gladys-lubluelu-vaccum:0.2.6",
-  "gladys_version": ">=4.86.1",
+  "gladys_version": ">=5.1.0",
   "categories": ["appliances"],
   "transports": ["local", "cloud"],
   "cover_image": "https://raw.githubusercontent.com/lm1lc3n7/gladys-lubluelu-vaccum/main/cover.png",
@@ -19,6 +19,36 @@
     }
   ],
   "config_schema": [
+    {
+      "key": "language",
+      "type": "select",
+      "label": {
+        "en": "Language of device names",
+        "fr": "Langue des noms d'appareil"
+      },
+      "description": {
+        "en": "Names of the features and choices created in Gladys, and of the scene event messages. Widgets always follow your own language.",
+        "fr": "Noms des fonctionnalités et des choix créés dans Gladys, et des messages des évènements de scène. Les widgets suivent toujours votre langue."
+      },
+      "required": false,
+      "default": "fr",
+      "options": [
+        {
+          "value": "fr",
+          "label": {
+            "en": "French",
+            "fr": "Français"
+          }
+        },
+        {
+          "value": "en",
+          "label": {
+            "en": "English",
+            "fr": "Anglais"
+          }
+        }
+      ]
+    },
     {
       "key": "intro_simple",
       "type": "section",
@@ -230,8 +260,8 @@
         "fr": "Version du protocole local (avancé)"
       },
       "description": {
-        "en": "Fallback used only when the LAN broadcast scan hasn't identified the device's own version yet. Most devices from 2020 onwards use 3.3 or 3.4.",
-        "fr": "Utilisé en secours uniquement tant que le scan de diffusion réseau n'a pas identifié la version propre à l'appareil. La plupart des appareils depuis 2020 utilisent 3.3 ou 3.4."
+        "en": "Fallback used only when the LAN broadcast scan hasn't identified the device's own version yet. Most devices from 2020 onwards use 3.3 or 3.4, recent ones 3.5.",
+        "fr": "Utilisé en secours uniquement tant que le scan de diffusion réseau n'a pas identifié la version propre à l'appareil. La plupart des appareils depuis 2020 utilisent 3.3 ou 3.4, les plus récents 3.5."
       },
       "required": false,
       "default": "3.3",
@@ -256,8 +286,41 @@
             "en": "3.4",
             "fr": "3.4"
           }
+        },
+        {
+          "value": "3.5",
+          "label": {
+            "en": "3.5",
+            "fr": "3.5"
+          }
         }
       ]
+    },
+    {
+      "key": "zones_intro",
+      "type": "section",
+      "label": {
+        "en": "Cleaning zones (LiDAR robots)",
+        "fr": "Zones de nettoyage (robots LiDAR)"
+      },
+      "description": {
+        "en": "Clean one room, several rooms or a zone drawn in the app, from a button, a widget or a scene. Easiest: start the clean from the Smart Life app once, then run the \"Memorize the last zone\" action below with a name. Or type the rooms by their id (the integration logs the ids each time a room clean is started from the app). Then click \"Update\" on the vacuum in the Discovery tab.",
+        "fr": "Nettoyez une pièce, plusieurs pièces ou une zone dessinée dans l'app, depuis un bouton, un widget ou une scène. Le plus simple : lancez une fois le nettoyage depuis l'app Smart Life, puis l'action « Mémoriser la dernière zone » ci-dessous avec un nom. Ou saisissez les pièces par leur numéro (l'intégration journalise les numéros à chaque nettoyage de pièce lancé depuis l'app). Cliquez ensuite sur « Mettre à jour » sur l'aspirateur dans l'onglet Découverte."
+      }
+    },
+    {
+      "key": "rooms",
+      "type": "string",
+      "label": {
+        "en": "Rooms by id (advanced)",
+        "fr": "Pièces par numéro (avancé)"
+      },
+      "description": {
+        "en": "Comma-separated name=ids, several rooms joined with +, x2 for two passes. Example: \"Kitchen=2, Living room=0+1, Bedrooms=3+4x2\".",
+        "fr": "Paires nom=numéros séparées par des virgules, plusieurs pièces jointes par +, x2 pour deux passages. Exemple : « Cuisine=2, Salon=0+1, Chambres=3+4x2 »."
+      },
+      "required": false,
+      "default": ""
     }
   ],
   "actions": [
@@ -278,6 +341,631 @@
             "fr": "Aspirateur"
           },
           "required": true
+        }
+      ]
+    },
+    {
+      "key": "learn_zone",
+      "label": {
+        "en": "Memorize the last zone",
+        "fr": "Mémoriser la dernière zone"
+      },
+      "timeout_seconds": 30,
+      "fields": [
+        {
+          "key": "help",
+          "type": "section",
+          "label": {
+            "en": "How it works",
+            "fr": "Comment ça marche"
+          },
+          "description": {
+            "en": "Start a room or zone clean from the Smart Life app first, while the integration is running. Then give it a name here: Gladys can replay it any time.",
+            "fr": "Lancez d'abord un nettoyage de pièce ou de zone depuis l'app Smart Life, pendant que l'intégration tourne. Donnez-lui ensuite un nom ici : Gladys pourra le relancer à tout moment."
+          }
+        },
+        {
+          "key": "device",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": true
+        },
+        {
+          "key": "name",
+          "type": "string",
+          "label": {
+            "en": "Zone name",
+            "fr": "Nom de la zone"
+          },
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "forget_zone",
+      "label": {
+        "en": "Forget a memorized zone",
+        "fr": "Oublier une zone mémorisée"
+      },
+      "timeout_seconds": 30,
+      "fields": [
+        {
+          "key": "device",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": true
+        },
+        {
+          "key": "name",
+          "type": "string",
+          "label": {
+            "en": "Zone name",
+            "fr": "Nom de la zone"
+          },
+          "required": true
+        }
+      ]
+    }
+  ],
+  "widgets": [
+    {
+      "key": "vacuum",
+      "label": {
+        "en": "Robot vacuum",
+        "fr": "Aspirateur robot"
+      },
+      "description": {
+        "en": "Battery, state, program and current cleaning, with start/pause, dock, locate, stop.",
+        "fr": "Batterie, état, programme et nettoyage en cours, avec marche/pause, base, localiser."
+      },
+      "icon": "disc",
+      "settings": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "description": {
+            "en": "Leave empty to show the first vacuum.",
+            "fr": "Laissez vide pour afficher le premier aspirateur."
+          },
+          "required": false
+        }
+      ],
+      "action_timeout_seconds": 20
+    },
+    {
+      "key": "quick_clean",
+      "label": {
+        "en": "Quick clean",
+        "fr": "Nettoyage express"
+      },
+      "description": {
+        "en": "Up to four one-tap cleanings: programs or zones, the program under way ticked.",
+        "fr": "Jusqu'à quatre nettoyages en un geste : programmes ou zones, celui en cours coché."
+      },
+      "icon": "zap",
+      "settings": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "description": {
+            "en": "Leave empty to show the first vacuum.",
+            "fr": "Laissez vide pour afficher le premier aspirateur."
+          },
+          "required": false
+        },
+        {
+          "key": "button_1",
+          "type": "string",
+          "label": {
+            "en": "Button 1",
+            "fr": "Bouton 1"
+          },
+          "description": {
+            "en": "A program (smart, edges, spot, mop) or a zone name. Leave all four empty for the vacuum's programs then zones.",
+            "fr": "Un programme (intelligent, bords, ciblé, serpillière) ou un nom de zone. Laissez les quatre vides pour les programmes puis les zones de l'aspirateur."
+          },
+          "required": false
+        },
+        {
+          "key": "button_2",
+          "type": "string",
+          "label": {
+            "en": "Button 2",
+            "fr": "Bouton 2"
+          },
+          "description": {
+            "en": "A program (smart, edges, spot, mop) or a zone name. Leave all four empty for the vacuum's programs then zones.",
+            "fr": "Un programme (intelligent, bords, ciblé, serpillière) ou un nom de zone. Laissez les quatre vides pour les programmes puis les zones de l'aspirateur."
+          },
+          "required": false
+        },
+        {
+          "key": "button_3",
+          "type": "string",
+          "label": {
+            "en": "Button 3",
+            "fr": "Bouton 3"
+          },
+          "description": {
+            "en": "A program (smart, edges, spot, mop) or a zone name. Leave all four empty for the vacuum's programs then zones.",
+            "fr": "Un programme (intelligent, bords, ciblé, serpillière) ou un nom de zone. Laissez les quatre vides pour les programmes puis les zones de l'aspirateur."
+          },
+          "required": false
+        },
+        {
+          "key": "button_4",
+          "type": "string",
+          "label": {
+            "en": "Button 4",
+            "fr": "Bouton 4"
+          },
+          "description": {
+            "en": "A program (smart, edges, spot, mop) or a zone name. Leave all four empty for the vacuum's programs then zones.",
+            "fr": "Un programme (intelligent, bords, ciblé, serpillière) ou un nom de zone. Laissez les quatre vides pour les programmes puis les zones de l'aspirateur."
+          },
+          "required": false
+        }
+      ],
+      "action_timeout_seconds": 20
+    },
+    {
+      "key": "remote",
+      "label": {
+        "en": "Vacuum remote",
+        "fr": "Télécommande aspirateur"
+      },
+      "description": {
+        "en": "Manual driving: forward, turn left, turn right and stop, with the state and battery.",
+        "fr": "Pilotage manuel : avancer, tourner à gauche, à droite et stop, avec l'état et la batterie."
+      },
+      "icon": "navigation",
+      "settings": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "description": {
+            "en": "Leave empty to show the first vacuum.",
+            "fr": "Laissez vide pour afficher le premier aspirateur."
+          },
+          "required": false
+        }
+      ],
+      "action_timeout_seconds": 20
+    },
+    {
+      "key": "maintenance",
+      "label": {
+        "en": "Vacuum maintenance",
+        "fr": "Entretien aspirateur"
+      },
+      "description": {
+        "en": "Remaining life of each part, most worn first, and a reset for worn parts.",
+        "fr": "Durée de vie restante de chaque pièce, la plus usée d'abord, et une remise à zéro des pièces usées."
+      },
+      "icon": "tool",
+      "settings": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "description": {
+            "en": "Leave empty to show the first vacuum.",
+            "fr": "Laissez vide pour afficher le premier aspirateur."
+          },
+          "required": false
+        }
+      ],
+      "action_timeout_seconds": 20
+    }
+  ],
+  "scene_triggers": [
+    {
+      "key": "cleaning_finished",
+      "label": {
+        "en": "Vacuum: cleaning finished",
+        "fr": "Aspirateur : nettoyage terminé"
+      },
+      "description": {
+        "en": "The robot ended a cleaning and went back to its dock.",
+        "fr": "Le robot a terminé un nettoyage et regagné sa base."
+      },
+      "fields": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": false
+        }
+      ],
+      "variables": [
+        {
+          "key": "area_m2",
+          "type": "number",
+          "label": {
+            "en": "Cleaned area (m²)",
+            "fr": "Surface nettoyée (m²)"
+          }
+        },
+        {
+          "key": "duration_min",
+          "type": "number",
+          "label": {
+            "en": "Cleaning time (min)",
+            "fr": "Durée (min)"
+          }
+        },
+        {
+          "key": "battery",
+          "type": "number",
+          "label": {
+            "en": "Battery (%)",
+            "fr": "Batterie (%)"
+          }
+        }
+      ]
+    },
+    {
+      "key": "vacuum_error",
+      "label": {
+        "en": "Vacuum: error",
+        "fr": "Aspirateur : erreur"
+      },
+      "description": {
+        "en": "The robot reported a fault (stuck, wheel, brush, dust bin...).",
+        "fr": "Le robot signale un défaut (bloqué, roue, brosse, bac...)."
+      },
+      "fields": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": false
+        }
+      ],
+      "variables": [
+        {
+          "key": "error_code",
+          "type": "number",
+          "label": {
+            "en": "Fault code",
+            "fr": "Code de défaut"
+          }
+        },
+        {
+          "key": "error_message",
+          "type": "string",
+          "label": {
+            "en": "Fault",
+            "fr": "Défaut"
+          }
+        }
+      ]
+    },
+    {
+      "key": "consumable_low",
+      "label": {
+        "en": "Vacuum: part worn out",
+        "fr": "Aspirateur : pièce usée"
+      },
+      "description": {
+        "en": "A part's remaining life dropped below 10 %.",
+        "fr": "La durée de vie restante d'une pièce est passée sous 10 %."
+      },
+      "fields": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": false
+        },
+        {
+          "key": "consumable",
+          "type": "multi_select",
+          "label": {
+            "en": "Parts",
+            "fr": "Pièces"
+          },
+          "required": false,
+          "options": [
+            {
+              "value": "filter",
+              "label": {
+                "en": "Filter",
+                "fr": "Filtre"
+              }
+            },
+            {
+              "value": "edge_brush",
+              "label": {
+                "en": "Side brush",
+                "fr": "Brosse latérale"
+              }
+            },
+            {
+              "value": "roll_brush",
+              "label": {
+                "en": "Roll brush",
+                "fr": "Brosse principale"
+              }
+            },
+            {
+              "value": "duster_cloth",
+              "label": {
+                "en": "Mop pad",
+                "fr": "Serpillière"
+              }
+            }
+          ]
+        }
+      ],
+      "variables": [
+        {
+          "key": "consumable",
+          "type": "string",
+          "label": {
+            "en": "Part",
+            "fr": "Pièce"
+          }
+        },
+        {
+          "key": "remaining_percent",
+          "type": "number",
+          "label": {
+            "en": "Remaining life (%)",
+            "fr": "Durée restante (%)"
+          }
+        }
+      ]
+    }
+  ],
+  "scene_actions": [
+    {
+      "key": "start_cleaning",
+      "label": {
+        "en": "Vacuum: start cleaning",
+        "fr": "Aspirateur : lancer un nettoyage"
+      },
+      "description": {
+        "en": "Program, suction and water level applied together, then start.",
+        "fr": "Programme, aspiration et débit d'eau appliqués ensemble, puis départ."
+      },
+      "timeout_seconds": 30,
+      "fields": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": true
+        },
+        {
+          "key": "program",
+          "type": "select",
+          "label": {
+            "en": "Program",
+            "fr": "Programme"
+          },
+          "required": false,
+          "default": "auto",
+          "options": [
+            {
+              "value": "auto",
+              "label": {
+                "en": "Smart",
+                "fr": "Intelligent"
+              }
+            },
+            {
+              "value": "edge",
+              "label": {
+                "en": "Edges",
+                "fr": "Bords"
+              }
+            },
+            {
+              "value": "spot",
+              "label": {
+                "en": "Spot",
+                "fr": "Ciblé"
+              }
+            },
+            {
+              "value": "mop",
+              "label": {
+                "en": "Mop",
+                "fr": "Serpillière"
+              }
+            }
+          ]
+        },
+        {
+          "key": "suction",
+          "type": "select",
+          "label": {
+            "en": "Suction",
+            "fr": "Aspiration"
+          },
+          "required": false,
+          "default": "unchanged",
+          "options": [
+            {
+              "value": "unchanged",
+              "label": {
+                "en": "Unchanged",
+                "fr": "Inchangée"
+              }
+            },
+            {
+              "value": "quiet",
+              "label": {
+                "en": "Quiet",
+                "fr": "Silencieuse"
+              }
+            },
+            {
+              "value": "normal",
+              "label": {
+                "en": "Normal",
+                "fr": "Normale"
+              }
+            },
+            {
+              "value": "strong",
+              "label": {
+                "en": "Strong",
+                "fr": "Forte"
+              }
+            },
+            {
+              "value": "max",
+              "label": {
+                "en": "Max",
+                "fr": "Maximum"
+              }
+            }
+          ]
+        },
+        {
+          "key": "water",
+          "type": "select",
+          "label": {
+            "en": "Water level",
+            "fr": "Débit d'eau"
+          },
+          "required": false,
+          "default": "unchanged",
+          "options": [
+            {
+              "value": "unchanged",
+              "label": {
+                "en": "Unchanged",
+                "fr": "Inchangé"
+              }
+            },
+            {
+              "value": "off",
+              "label": {
+                "en": "Off",
+                "fr": "Coupé"
+              }
+            },
+            {
+              "value": "low",
+              "label": {
+                "en": "Low",
+                "fr": "Faible"
+              }
+            },
+            {
+              "value": "medium",
+              "label": {
+                "en": "Medium",
+                "fr": "Moyen"
+              }
+            },
+            {
+              "value": "high",
+              "label": {
+                "en": "High",
+                "fr": "Élevé"
+              }
+            }
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "key": "transport",
+          "type": "string",
+          "label": {
+            "en": "Sent via (local / cloud)",
+            "fr": "Envoyé via (local / cloud)"
+          }
+        }
+      ]
+    },
+    {
+      "key": "clean_zone",
+      "label": {
+        "en": "Vacuum: clean a zone",
+        "fr": "Aspirateur : nettoyer une zone"
+      },
+      "description": {
+        "en": "Clean a memorized zone or a room typed in the configuration.",
+        "fr": "Nettoyer une zone mémorisée ou une pièce saisie dans la configuration."
+      },
+      "timeout_seconds": 30,
+      "fields": [
+        {
+          "key": "vacuum",
+          "type": "select",
+          "source": "devices",
+          "label": {
+            "en": "Vacuum",
+            "fr": "Aspirateur"
+          },
+          "required": true
+        },
+        {
+          "key": "zone",
+          "type": "string",
+          "label": {
+            "en": "Zone name",
+            "fr": "Nom de la zone"
+          },
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "key": "transport",
+          "type": "string",
+          "label": {
+            "en": "Sent via (local / cloud)",
+            "fr": "Envoyé via (local / cloud)"
+          }
         }
       ]
     }
