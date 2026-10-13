@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-13
+
 ### Changed
 
 - Shared tooling of the LM1LC3N7 Gladys integrations: CI on Node 22 and 24
@@ -23,5 +25,6 @@ the notes of the version's GitHub Release.
 The releases before this file was started are described by their GitHub
 Releases.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/releases/tag/v0.3.1
