@@ -1,29 +1,23 @@
 # -----------------------------------------------------------------------------
 # Continuous integration: runs on every push and every pull request.
 #
-# Three independent jobs:
-#   1. quality        -> Prettier, ESLint, `node --test` (no extra dependency).
-#      `npm test` only exercises bridge/tuya_bridge.py's *protocol* against a
-#      plain-Node fixture (test-fixtures/echoBridge.js), never the real
-#      `tuya_sharing` package, so it cannot by itself catch a Tuya SDK release
-#      that breaks this bridge's usage of it - that's job 2 below.
-#   2. python-bridge  -> installs bridge/requirements.txt for real and imports
-#      bridge/tuya_bridge.py against the actual installed `tuya-device-sharing-sdk`.
-#      This is what makes a Dependabot bump of that SDK (see
-#      .github/dependabot.yml's `pip` entry) trustworthy to merge: an SDK
-#      release that renames/removes LoginControl/Manager/SharingTokenListener,
-#      or a status_range/local_strategy field _serialize_device relies on,
-#      fails right here instead of only being discovered against a real
-#      vacuum. dependabot-auto-merge.yml only merges once this job is green.
-#   3. docker         -> `docker build .`, no push. Without this job a
-#      Dockerfile change (base image bump, a COPY typo...) goes green on
-#      `quality` alone and is only ever actually built the day someone cuts a
-#      release — this catches it on every PR instead.
+# Four gates:
+#   1. Prettier  -> consistent formatting (no style debates in reviews);
+#   2. ESLint    -> catch real mistakes (undefined vars, dead code, ...);
+#   3. Tests     -> `node --test`, the built-in runner (no network);
+#   4. npm audit -> known vulnerabilities of the production dependencies.
 #
-# Runs on the Node version pinned in `.nvmrc` — the same major the Docker
-# image ships with (test/runtime.test.js fails if the Dockerfile's `FROM
-# node:<major>-alpine` drifts from it, or moves to an odd-numbered, never-LTS
-# major), so the check exercises the exact runtime the integration runs on.
+# The GitHub Actions quota is limited: if every job fails in under 2 seconds,
+# the quota is exhausted, it is not a bug.
+#
+# They run on Node 22 (the oldest version `engines` accepts) and Node 24 (the
+# one the Docker image ships with, see the Dockerfile). The image is built too
+# (amd64 only, never pushed), so a broken Dockerfile shows up here rather than
+# in a release.
+#
+# The store validator (`npx github:GladysAssistant/integration-store .`) is not
+# a gate here: it also checks that the manifest's `docker_image` exists on its
+# registry, which is false until the first release.
 # -----------------------------------------------------------------------------
 name: CI
 
@@ -33,23 +27,29 @@ on:
       - main
   pull_request:
 
-# Read-only token: no job here writes anything (the docker job builds without
-# pushing), so don't inherit the repository's default token permissions.
+# Checks only read the code: no write scope for the token, whatever the
+# repository default is.
 permissions:
   contents: read
 
 jobs:
   quality:
     runs-on: ubuntu-latest
-    name: Lint & test
+    name: Lint & test (Node ${{ matrix.node-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false # no git push here
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version-file: .nvmrc
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
@@ -64,6 +64,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Audit the production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
   python-bridge:
     runs-on: ubuntu-latest
     name: Python bridge (real SDK)
@@ -72,7 +75,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -126,9 +129,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false # no git push here
 
-      - name: Build the image (no push)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Same build as build.yml, without pushing, and for amd64 only: emulating
+      # arm64 is slow, and only the release build needs it.
+      - name: Build (no push)
         uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64
           push: false
