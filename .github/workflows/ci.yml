@@ -87,6 +87,9 @@ jobs:
       - name: Byte-compile the bridge
         run: python3 -m py_compile bridge/tuya_bridge.py
 
+      - name: Bridge unit tests (real SDK)
+        run: python3 -m unittest discover -s bridge -v
+
       - name: Smoke-import against the installed SDK
         run: |
           python3 - <<'PY'

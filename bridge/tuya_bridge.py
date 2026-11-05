@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import traceback
@@ -54,6 +55,56 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger("tuya_bridge")
+
+# Secrets that the SDK, requests and urllib3 can put in a log line or an
+# exception message: the refresh_token is part of the renewal URL
+# (/v1.0/m/token/<refresh_token>), and decrypted responses carry tokens and
+# local keys.
+_SECRET_PATTERNS = (
+    (re.compile(r"(/m/token/)[^\s'\"?&)]+"), r"\1***"),
+    (
+        re.compile(
+            r"""(['"]?(?:access_?token|refresh_?token|local_?key|accessToken|refreshToken|localKey)['"]?\s*[:=]\s*['"]?)[^'",\s}]+""",
+            re.IGNORECASE,
+        ),
+        r"\1***",
+    ),
+)
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+class _RedactSecrets(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if record.exc_info:
+            message += "\n" + logging.Formatter().formatException(record.exc_info)
+            record.exc_info = None
+            record.exc_text = None
+        record.msg = _redact(message)
+        record.args = None
+        return True
+
+
+def _setup_logging() -> None:
+    root_level = logging.getLogger().level
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_RedactSecrets())
+    # The SDK adds its own stderr handler (no level word, so Node could not
+    # rank its lines, and every line twice): drop it, let it reach the
+    # redacting root handler once. Its DEBUG output dumps decrypted responses,
+    # urllib3's the renewal URL: never below INFO, whatever LOG_LEVEL says.
+    sdk_logger = logging.getLogger("tuya_sharing")
+    sdk_logger.handlers.clear()
+    for name in ("tuya_sharing", "urllib3"):
+        logging.getLogger(name).setLevel(max(root_level, logging.INFO))
+
+
+_setup_logging()
 
 # See the module docstring: Home Assistant's own public device-sharing app
 # registration, not a secret.
@@ -85,6 +136,7 @@ def _is_expired(exc: Exception) -> bool:
         return False
     return str(exc.error_code) == "1010" or any(m in str(exc.error_message).lower() for m in EXPIRED_MARKERS)
 
+
 # stdout is written from two threads: the request loop, and the SDK's MQTT
 # thread (live updates) - one lock keeps every line whole.
 _stdout_lock = threading.Lock()
@@ -104,9 +156,16 @@ class BridgeState:
         self.manager: Manager | None = None
         self.session: dict[str, Any] | None = None
         self.push_started = False
+        # Guards manager/session against the SDK's MQTT thread, which renews
+        # tokens (_TokenSaver) while the request loop may swap the account.
+        self.lock = threading.RLock()
 
     def replace_manager(self, manager: Manager | None, session: dict[str, Any] | None) -> None:
         """Swap the active account, stopping the previous one's MQTT push."""
+        with self.lock:
+            self._replace_manager(manager, session)
+
+    def _replace_manager(self, manager: Manager | None, session: dict[str, Any] | None) -> None:
         if self.manager is not None and getattr(self.manager, "mq", None) is not None:
             try:
                 self.manager.mq.stop()
@@ -148,32 +207,39 @@ class _TokenSaver(SharingTokenListener):
 
     def __init__(self, state: BridgeState) -> None:
         self.state = state
+        # The Manager this saver belongs to (set right after it is built): a
+        # renewal still in flight on a replaced Manager's MQTT thread must not
+        # land in the new account's session.
+        self.owner: Manager | None = None
 
     def update_token(self, token_info: dict[str, Any]) -> None:
-        if self.state.session is None:
-            return
-        # A new dict, never an in-place edit: this runs on the MQTT thread too,
-        # while the request loop may be serializing the current session.
-        session = {**self.state.session, "token_info": {k: token_info.get(k) for k in TOKEN_FIELDS}}
-        self.state.session = session
-        # Tuya rotates the refresh_token on every refresh and the old one stops
-        # working: Node must persist this one now, not at its next hourly
-        # refresh, or a restart in between brings back a dead token.
-        _write({"event": "session", "session": session})
+        with self.state.lock:
+            if self.state.session is None or self.owner is None or self.state.manager is not self.owner:
+                return
+            # A new dict, never an in-place edit: the request loop may be
+            # serializing the current session.
+            session = {**self.state.session, "token_info": {k: token_info.get(k) for k in TOKEN_FIELDS}}
+            self.state.session = session
+            # Tuya rotates the refresh_token on every refresh and the old one
+            # stops working: Node must persist this one now, not at its next
+            # hourly refresh, or a restart in between brings back a dead token.
+            _write({"event": "session", "session": session})
 
 
 state = BridgeState()
 
 
 def _build_manager(session: dict[str, Any]) -> Manager:
+    saver = _TokenSaver(state)
     manager = Manager(
         session.get("client_id", CLIENT_ID),
         session["user_code"],
         session["terminal_id"],
         session["endpoint"],
         session["token_info"],
-        _TokenSaver(state),
+        saver,
     )
+    saver.owner = manager
     manager.add_device_listener(_StatusForwarder())
     return manager
 
@@ -236,11 +302,15 @@ def _token_time(session: dict[str, Any] | None) -> int:
 
 
 def _same_account(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
-    if not a or not b:
+    if not a or not b or a.get("user_code") != b.get("user_code"):
         return False
     uid_a = (a.get("token_info") or {}).get("uid")
     uid_b = (b.get("token_info") or {}).get("uid")
-    return a.get("user_code") == b.get("user_code") and bool(uid_a) and uid_a == uid_b
+    if uid_a or uid_b:
+        return uid_a == uid_b
+    # No uid in either (never seen from Tuya, but not guaranteed): the
+    # terminal id is set by the QR login and kept by every renewal.
+    return bool(a.get("terminal_id")) and a.get("terminal_id") == b.get("terminal_id")
 
 
 def cmd_restore_session(params: dict[str, Any]) -> dict[str, Any]:
@@ -253,9 +323,10 @@ def cmd_restore_session(params: dict[str, Any]) -> dict[str, Any]:
     revoked, so the newer one is kept and handed back for Node to persist.
     """
     session = params["session"]
-    if _same_account(state.session, session) and _token_time(state.session) >= _token_time(session):
-        return {"success": True, "kept": True, "session": state.session}
-    state.replace_manager(_build_manager(session), session)
+    with state.lock:
+        if _same_account(state.session, session) and _token_time(state.session) >= _token_time(session):
+            return {"success": True, "kept": True, "session": state.session}
+        state.replace_manager(_build_manager(session), session)
     return {"success": True, "kept": False, "session": session}
 
 
@@ -296,14 +367,32 @@ def _serialize_device(device: Any) -> dict[str, Any]:
     }
 
 
+def _refresh_token_of(session: dict[str, Any] | None) -> Any:
+    return ((session or {}).get("token_info") or {}).get("refresh_token")
+
+
 def _call_tuya(fn: Any, *args: Any) -> Any:
     """Run one SDK call, turning a dead session into SessionExpired. The MQTT
-    push is stopped then: with the same dead token it would only retry."""
+    push is stopped then: with the same dead token it would only retry.
+
+    The SDK's renewal guard is a plain flag, not a lock: when the MQTT thread
+    renews the tokens during this call, the call can still go out signed with
+    the previous refresh_token and get "sign invalid". The tokens changed
+    under it then, so it is retried once before the session is declared dead.
+    """
+    token_before = _refresh_token_of(state.session)
     try:
         return fn(*args)
     except ApiRequestException as exc:
         if not _is_expired(exc):
             raise
+        if _refresh_token_of(state.session) != token_before:
+            try:
+                return fn(*args)
+            except ApiRequestException as retry_exc:
+                if not _is_expired(retry_exc):
+                    raise
+                exc = retry_exc
         if state.manager is not None and getattr(state.manager, "mq", None) is not None:
             try:
                 state.manager.mq.stop()
@@ -389,7 +478,8 @@ def handle_request(line: str) -> None:
             response = {"id": request_id, "ok": False, "error": str(exc), "code": "SESSION_EXPIRED"}
         except Exception as exc:  # noqa: BLE001 - relayed to Node as a plain error string
             logger.error("Command %s failed: %s\n%s", cmd, exc, traceback.format_exc())
-            response = {"id": request_id, "ok": False, "error": str(exc)}
+            # requests puts the URL in its messages: the renewal one holds the refresh_token.
+            response = {"id": request_id, "ok": False, "error": _redact(str(exc))}
 
     _write(response)
 

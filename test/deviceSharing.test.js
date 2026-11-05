@@ -185,3 +185,14 @@ test('TuyaDeviceSharingClient does not flag other discovery errors as an expiry'
   await assert.rejects(client.discoverDevices(), /network down/);
   assert.equal(client.expired, false);
 });
+
+test('TuyaDeviceSharingClient replays the last rotated session into a respawned bridge', async () => {
+  const bridge = fakeBridge({ restore_session: () => ({ success: true }) });
+  const client = new TuyaDeviceSharingClient({ bridge });
+  client.onSessionRotated({ token_info: { t: 7, refresh_token: 'r7' } });
+  client.restoreAfterRespawn();
+  assert.deepEqual(bridge.calls[0], {
+    cmd: 'restore_session',
+    params: { session: { token_info: { t: 7, refresh_token: 'r7' } } },
+  });
+});
