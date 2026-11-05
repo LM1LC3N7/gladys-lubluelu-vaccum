@@ -80,7 +80,10 @@ def _redact(text: str) -> str:
 
 class _RedactSecrets(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        message = record.getMessage()
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a malformed log call must not raise at its caller
+            message = str(record.msg)
         if record.exc_info:
             message += "\n" + logging.Formatter().formatException(record.exc_info)
             record.exc_info = None
@@ -105,6 +108,18 @@ def _setup_logging() -> None:
 
 
 _setup_logging()
+
+
+def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+    # An uncaught error in a paho or SDK thread would otherwise print its raw
+    # traceback (with whatever URL it holds) to stderr, past the filter.
+    logger.error(
+        "Uncaught error in thread %s", getattr(args.thread, "name", "?"),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+threading.excepthook = _log_thread_exception
 
 # See the module docstring: Home Assistant's own public device-sharing app
 # registration, not a secret.
@@ -163,17 +178,28 @@ class BridgeState:
     def replace_manager(self, manager: Manager | None, session: dict[str, Any] | None) -> None:
         """Swap the active account, stopping the previous one's MQTT push."""
         with self.lock:
-            self._replace_manager(manager, session)
+            previous = self.swap(manager, session)
+        self.stop_push_of(previous)
 
-    def _replace_manager(self, manager: Manager | None, session: dict[str, Any] | None) -> None:
-        if self.manager is not None and getattr(self.manager, "mq", None) is not None:
-            try:
-                self.manager.mq.stop()
-            except Exception:  # best effort on the way out
-                logger.debug("Stopping the previous MQTT push failed", exc_info=True)
+    def swap(self, manager: Manager | None, session: dict[str, Any] | None) -> Manager | None:
+        """Install the new account, returning the previous Manager. Caller holds
+        the lock, and calls stop_push_of() on the result once it released it."""
+        previous = self.manager
         self.manager = manager
         self.session = session
         self.push_started = False
+        return previous if previous is not manager else None
+
+    @staticmethod
+    def stop_push_of(previous: Manager | None) -> None:
+        # Never under the lock: stop() joins paho's network thread, which may
+        # be waiting on it in _TokenSaver.update_token. Once swapped, that
+        # renewal is dropped (its Manager is no longer the owner).
+        if previous is not None and getattr(previous, "mq", None) is not None:
+            try:
+                previous.mq.stop()
+            except Exception:  # best effort on the way out
+                logger.debug("Stopping the previous MQTT push failed", exc_info=True)
 
 
 class _StatusForwarder(SharingDeviceListener):
@@ -326,7 +352,8 @@ def cmd_restore_session(params: dict[str, Any]) -> dict[str, Any]:
     with state.lock:
         if _same_account(state.session, session) and _token_time(state.session) >= _token_time(session):
             return {"success": True, "kept": True, "session": state.session}
-        state.replace_manager(_build_manager(session), session)
+        previous = state.swap(_build_manager(session), session)
+    state.stop_push_of(previous)
     return {"success": True, "kept": False, "session": session}
 
 
@@ -367,11 +394,16 @@ def _serialize_device(device: Any) -> dict[str, Any]:
     }
 
 
-def _refresh_token_of(session: dict[str, Any] | None) -> Any:
-    return ((session or {}).get("token_info") or {}).get("refresh_token")
+def _current_refresh_token() -> Any:
+    """The refresh_token the SDK signs with right now: its CustomerApi swaps
+    token_info before _TokenSaver updates state.session."""
+    token_info = getattr(getattr(state.manager, "customer_api", None), "token_info", None)
+    if token_info is not None:
+        return getattr(token_info, "refresh_token", None)
+    return ((state.session or {}).get("token_info") or {}).get("refresh_token")
 
 
-def _call_tuya(fn: Any, *args: Any) -> Any:
+def _call_tuya(fn: Any, *args: Any, before_retry: Any = None) -> Any:
     """Run one SDK call, turning a dead session into SessionExpired. The MQTT
     push is stopped then: with the same dead token it would only retry.
 
@@ -379,14 +411,17 @@ def _call_tuya(fn: Any, *args: Any) -> Any:
     renews the tokens during this call, the call can still go out signed with
     the previous refresh_token and get "sign invalid". The tokens changed
     under it then, so it is retried once before the session is declared dead.
+    `before_retry` undoes what the first try left behind (see cmd_send_command).
     """
-    token_before = _refresh_token_of(state.session)
+    token_before = _current_refresh_token()
     try:
         return fn(*args)
     except ApiRequestException as exc:
         if not _is_expired(exc):
             raise
-        if _refresh_token_of(state.session) != token_before:
+        if _current_refresh_token() != token_before:
+            if before_retry is not None:
+                before_retry()
             try:
                 return fn(*args)
             except ApiRequestException as retry_exc:
@@ -399,7 +434,7 @@ def _call_tuya(fn: Any, *args: Any) -> Any:
             except Exception:  # best effort
                 logger.debug("Stopping the MQTT push failed", exc_info=True)
         state.push_started = False
-        raise SessionExpired(f"Smart Life session expired, scan the QR code again ({exc})") from exc
+        raise SessionExpired(_redact(f"Smart Life session expired, scan the QR code again ({exc})")) from exc
 
 
 def cmd_discover(_params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -420,7 +455,27 @@ def cmd_discover(_params: dict[str, Any]) -> list[dict[str, Any]]:
 def cmd_send_command(params: dict[str, Any]) -> dict[str, Any]:
     if state.manager is None:
         raise RuntimeError("No active device-sharing session")
-    _call_tuya(state.manager.send_commands, params["device_id"], [{"code": params["code"], "value": params["value"]}])
+    manager = state.manager
+    device_id = params["device_id"]
+
+    def forget_last_send() -> None:
+        # The SDK drops the same command to the same device for 10 s, counted
+        # from the attempt, not from a success: a refused send would make the
+        # retry (or the user's next press) a silent no-op reported as sent.
+        command_filter = getattr(getattr(manager, "device_repository", None), "filter", None)
+        if command_filter is not None:
+            command_filter.last_call_time.pop(device_id, None)
+
+    try:
+        _call_tuya(
+            manager.send_commands,
+            device_id,
+            [{"code": params["code"], "value": params["value"]}],
+            before_retry=forget_last_send,
+        )
+    except Exception:
+        forget_last_send()
+        raise
     return {"success": True}
 
 

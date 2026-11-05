@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import sys
+import threading
 import unittest
 from typing import Any
 from unittest import mock
@@ -72,24 +73,71 @@ class ExpiryDetection(BridgeTestCase):
     def test_retried_once_when_the_tokens_rotated_during_the_call(self) -> None:
         b.state.session = session(refresh="r1")
         calls = []
+        manager = mock.Mock(device_map={})
+        manager.customer_api.token_info.refresh_token = "r1"
 
         def update_device_cache() -> None:
             calls.append(1)
             if len(calls) == 1:
-                b.state.session = session(refresh="r2", t=2)  # MQTT thread renewal
+                # MQTT thread renewal: the SDK swaps its token before state.session follows.
+                manager.customer_api.token_info.refresh_token = "r2"
                 raise SIGN_INVALID
 
-        b.state.manager = mock.Mock(device_map={}, update_device_cache=update_device_cache)
+        manager.update_device_cache = update_device_cache
+        b.state.manager = manager
         self.assertEqual(b.cmd_discover({}), [])
         self.assertEqual(len(calls), 2)
 
     def test_not_retried_when_the_tokens_did_not_change(self) -> None:
         b.state.session = session()
         b.state.manager = mock.Mock(device_map={})
+        b.state.manager.customer_api.token_info.refresh_token = "r1"
         b.state.manager.update_device_cache.side_effect = SIGN_INVALID
         with self.assertRaises(b.SessionExpired):
             b.cmd_discover({})
         self.assertEqual(b.state.manager.update_device_cache.call_count, 1)
+
+
+class SendCommand(BridgeTestCase):
+    """Against the real Manager.send_commands and its 10 s duplicate filter."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from tuya_sharing import Manager
+
+        self.manager = Manager("cid", "C", "term", "https://example.invalid", session()["token_info"], None)
+        b.state.manager, b.state.session = self.manager, session()
+        self.posts: list[str] = []
+
+    def params(self) -> dict[str, Any]:
+        return {"device_id": "dev1", "code": "power_go", "value": True}
+
+    def test_a_retry_after_a_renewal_really_sends_again(self) -> None:
+        api = self.manager.customer_api
+
+        def post(path: str, params: Any = None, body: Any = None) -> dict[str, Any]:
+            self.posts.append(path)
+            if len(self.posts) == 1:
+                api.token_info.refresh_token = "r2"  # renewed by the MQTT thread meanwhile
+                raise SIGN_INVALID
+            return {"success": True}
+
+        with mock.patch.object(api, "post", post):
+            self.assertEqual(b.cmd_send_command(self.params()), {"success": True})
+        self.assertEqual(len(self.posts), 2)
+
+    def test_a_refused_send_does_not_swallow_the_next_press(self) -> None:
+        def post(path: str, params: Any = None, body: Any = None) -> dict[str, Any]:
+            self.posts.append(path)
+            if len(self.posts) == 1:
+                raise ApiRequestException(error_code=500, error_message="busy")
+            return {"success": True}
+
+        with mock.patch.object(self.manager.customer_api, "post", post):
+            with self.assertRaises(ApiRequestException):
+                b.cmd_send_command(self.params())
+            b.cmd_send_command(self.params())
+        self.assertEqual(len(self.posts), 2)
 
 
 class RestoreSession(BridgeTestCase):
@@ -149,6 +197,38 @@ class TokenSaver(BridgeTestCase):
         self.assertEqual(b.state.session["user_code"], "OTHER")
         self.assertEqual(b.state.session["token_info"]["uid"], "v")
 
+    def test_renewal_waits_for_an_account_swap_in_progress(self) -> None:
+        owner = object()
+        b.state.manager, b.state.session = owner, session()
+        saver = b._TokenSaver(b.state)
+        saver.owner = owner
+        with b.state.lock:
+            worker = threading.Thread(target=saver.update_token, args=({"t": 2, "uid": "u", "refresh_token": "r2"},))
+            worker.start()
+            worker.join(0.2)
+            self.assertTrue(worker.is_alive())  # blocked on the lock
+            b.state.swap(object(), session(user_code="OTHER", uid="v"))
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.lines(), [])  # its Manager is no longer the owner
+
+    def test_swapping_does_not_deadlock_with_a_renewal_on_the_push_thread(self) -> None:
+        old_owner = mock.Mock()
+        b.state.manager, b.state.session = old_owner, session()
+        saver = b._TokenSaver(b.state)
+        saver.owner = old_owner
+
+        def stop() -> None:
+            # Like paho's loop_stop(): joins a thread that renews the tokens.
+            renewal = threading.Thread(target=saver.update_token, args=({"t": 2, "uid": "u"},))
+            renewal.start()
+            renewal.join()
+
+        old_owner.mq.stop = stop
+        done = threading.Event()
+        threading.Thread(target=lambda: (b.state.replace_manager(mock.Mock(mq=None), session(t=3)), done.set()), daemon=True).start()
+        self.assertTrue(done.wait(2), "replace_manager deadlocked")
+
     def test_build_manager_binds_the_saver_to_its_manager(self) -> None:
         manager = b._build_manager(session())
         self.assertIs(manager.customer_api.token_listener.owner, manager)
@@ -167,18 +247,17 @@ class Redaction(unittest.TestCase):
         self.assertIn("'uid': 'u'", redacted)
 
     def test_sdk_log_lines_reach_stderr_masked_and_once(self) -> None:
+        # The bridge's own root handler, as installed at import (not a copy).
+        (handler,) = logging.getLogger().handlers
+        self.assertTrue(any(isinstance(f, b._RedactSecrets) for f in handler.filters))
         stream = io.StringIO()
-        handler = logging.StreamHandler(stream)
-        handler.addFilter(b._RedactSecrets())
-        root = logging.getLogger()
-        root.addHandler(handler)
-        try:
+        with mock.patch.object(handler, "stream", stream):
             logging.getLogger("tuya_sharing").error("net work error = url: /v1.0/m/token/SECRET1")
-            logging.getLogger("tuya_sharing").debug("response ret = {'refreshToken': 'SECRET2'}")
-        finally:
-            root.removeHandler(handler)
+            logging.getLogger("tuya_sharing").warning("response ret = {'refreshToken': 'SECRET2'}")
+            logging.getLogger("tuya_sharing").error("trace", exc_info=OSError("url: /v1.0/m/token/SECRET4"))
         self.assertNotIn("SECRET1", stream.getvalue())
         self.assertNotIn("SECRET2", stream.getvalue())
+        self.assertNotIn("SECRET4", stream.getvalue())
         self.assertEqual(stream.getvalue().count("net work error"), 1)
         self.assertEqual(logging.getLogger("tuya_sharing").handlers, [])
         self.assertGreaterEqual(logging.getLogger("urllib3").level, logging.INFO)
