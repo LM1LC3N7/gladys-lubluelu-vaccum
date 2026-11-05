@@ -46,6 +46,7 @@ import traceback
 from typing import Any
 
 from tuya_sharing import LoginControl, Manager, SharingDeviceListener, SharingTokenListener
+from tuya_sharing.exceptions import ApiRequestException
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -67,6 +68,22 @@ SCHEME = "haauthorize"
 QR_URL_SCHEME = os.environ.get("TUYA_QR_SCHEME", "smartlife")
 
 TOKEN_FIELDS = ("t", "uid", "expire_time", "access_token", "refresh_token")
+
+# What Tuya answers once the refresh_token is no longer valid: 1010 "token is
+# expired" on the refresh itself, then -9999999 "sign invalid" on every call
+# (the SDK signs each request with the dead refresh_token). Only a new QR
+# login gets out of it.
+EXPIRED_MARKERS = ("token is expired", "token invalid", "sign invalid")
+
+
+class SessionExpired(RuntimeError):
+    """The Smart Life session is dead: Node asks the user to scan the QR again."""
+
+
+def _is_expired(exc: Exception) -> bool:
+    if not isinstance(exc, ApiRequestException):
+        return False
+    return str(exc.error_code) == "1010" or any(m in str(exc.error_message).lower() for m in EXPIRED_MARKERS)
 
 # stdout is written from two threads: the request loop, and the SDK's MQTT
 # thread (live updates) - one lock keeps every line whole.
@@ -133,8 +150,16 @@ class _TokenSaver(SharingTokenListener):
         self.state = state
 
     def update_token(self, token_info: dict[str, Any]) -> None:
-        if self.state.session is not None:
-            self.state.session["token_info"] = {k: token_info.get(k) for k in TOKEN_FIELDS}
+        if self.state.session is None:
+            return
+        # A new dict, never an in-place edit: this runs on the MQTT thread too,
+        # while the request loop may be serializing the current session.
+        session = {**self.state.session, "token_info": {k: token_info.get(k) for k in TOKEN_FIELDS}}
+        self.state.session = session
+        # Tuya rotates the refresh_token on every refresh and the old one stops
+        # working: Node must persist this one now, not at its next hourly
+        # refresh, or a restart in between brings back a dead token.
+        _write({"event": "session", "session": session})
 
 
 state = BridgeState()
@@ -203,12 +228,35 @@ def cmd_qr_poll(params: dict[str, Any]) -> dict[str, Any]:
     return {"status": "success", "session": session}
 
 
+def _token_time(session: dict[str, Any] | None) -> int:
+    try:
+        return int(((session or {}).get("token_info") or {}).get("t") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _same_account(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
+    if not a or not b:
+        return False
+    uid_a = (a.get("token_info") or {}).get("uid")
+    uid_b = (b.get("token_info") or {}).get("uid")
+    return a.get("user_code") == b.get("user_code") and bool(uid_a) and uid_a == uid_b
+
+
 def cmd_restore_session(params: dict[str, Any]) -> dict[str, Any]:
     """Rebuild the Manager from a session Node persisted (gladys.setConfig)
-    across a container restart — no fresh QR scan needed."""
+    across a container restart — no fresh QR scan needed.
+
+    Node also replays it on every reconnection to Gladys, while this process
+    may still hold a newer token of the same account (rotated since Node last
+    saved it). Replacing it would bring back a refresh_token Tuya already
+    revoked, so the newer one is kept and handed back for Node to persist.
+    """
     session = params["session"]
+    if _same_account(state.session, session) and _token_time(state.session) >= _token_time(session):
+        return {"success": True, "kept": True, "session": state.session}
     state.replace_manager(_build_manager(session), session)
-    return {"success": True}
+    return {"success": True, "kept": False, "session": session}
 
 
 def cmd_get_session(_params: dict[str, Any]) -> dict[str, Any] | None:
@@ -248,10 +296,27 @@ def _serialize_device(device: Any) -> dict[str, Any]:
     }
 
 
+def _call_tuya(fn: Any, *args: Any) -> Any:
+    """Run one SDK call, turning a dead session into SessionExpired. The MQTT
+    push is stopped then: with the same dead token it would only retry."""
+    try:
+        return fn(*args)
+    except ApiRequestException as exc:
+        if not _is_expired(exc):
+            raise
+        if state.manager is not None and getattr(state.manager, "mq", None) is not None:
+            try:
+                state.manager.mq.stop()
+            except Exception:  # best effort
+                logger.debug("Stopping the MQTT push failed", exc_info=True)
+        state.push_started = False
+        raise SessionExpired(f"Smart Life session expired, scan the QR code again ({exc})") from exc
+
+
 def cmd_discover(_params: dict[str, Any]) -> list[dict[str, Any]]:
     if state.manager is None:
         raise RuntimeError("No active device-sharing session: call qr_start/qr_poll or restore_session first")
-    state.manager.update_device_cache()
+    _call_tuya(state.manager.update_device_cache)
     devices = []
     for device in state.manager.device_map.values():
         try:
@@ -266,7 +331,7 @@ def cmd_discover(_params: dict[str, Any]) -> list[dict[str, Any]]:
 def cmd_send_command(params: dict[str, Any]) -> dict[str, Any]:
     if state.manager is None:
         raise RuntimeError("No active device-sharing session")
-    state.manager.send_commands(params["device_id"], [{"code": params["code"], "value": params["value"]}])
+    _call_tuya(state.manager.send_commands, params["device_id"], [{"code": params["code"], "value": params["value"]}])
     return {"success": True}
 
 
@@ -282,7 +347,7 @@ def cmd_get_status(params: dict[str, Any]) -> list[dict[str, Any]]:
     device_id = params["device_id"]
     device = state.manager.device_map.get(device_id)
     if device is None:
-        state.manager.update_device_cache()
+        _call_tuya(state.manager.update_device_cache)
         device = state.manager.device_map.get(device_id)
     if device is None:
         raise RuntimeError(f"Unknown device {device_id}")
@@ -318,6 +383,10 @@ def handle_request(line: str) -> None:
         try:
             result = handler(request)
             response = {"id": request_id, "ok": True, "result": result}
+        except SessionExpired as exc:
+            # Expected until the user logs in again: one line, no traceback.
+            logger.warning("Command %s failed: %s", cmd, exc)
+            response = {"id": request_id, "ok": False, "error": str(exc), "code": "SESSION_EXPIRED"}
         except Exception as exc:  # noqa: BLE001 - relayed to Node as a plain error string
             logger.error("Command %s failed: %s\n%s", cmd, exc, traceback.format_exc())
             response = {"id": request_id, "ok": False, "error": str(exc)}

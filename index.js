@@ -92,6 +92,12 @@ const bridge = new PythonBridge({
   // Live updates pushed by Tuya's MQTT broker (Smart Life method), relayed
   // by the bridge: the state source of a vacuum without a LAN session.
   onEvent: (event) => {
+    if (event.event === 'session') {
+      // Tokens rotated (on any thread of the bridge): persist them right away.
+      sharing.onSessionRotated(event.session);
+      persistSharingSession(event.session).catch(() => {});
+      return;
+    }
     if (event.event === 'status' && event.device_id) {
       applyCloudStatus(gladys, event.device_id, event.status).catch((err) =>
         logger.error(`Applying a pushed status failed: ${err.message}`),
@@ -151,12 +157,20 @@ function scheduleRefreshTimer() {
 /** Re-persist the device-sharing session if its tokens rotated since last saved (see bridge/tuya_bridge.py's _TokenSaver). */
 async function resyncSharingSession() {
   try {
-    const session = await sharing.getSession();
-    if (session) {
-      await gladys.setConfig({ [SHARING_SESSION_CONFIG_KEY]: JSON.stringify(session) });
-    }
+    await persistSharingSession(await sharing.getSession());
   } catch (err) {
     logger.debug(`Could not resync the device-sharing session: ${err.message}`);
+  }
+}
+
+async function persistSharingSession(session) {
+  if (!session) {
+    return;
+  }
+  try {
+    await gladys.setConfig({ [SHARING_SESSION_CONFIG_KEY]: JSON.stringify(session) });
+  } catch (err) {
+    logger.warn(`Could not save the rotated Smart Life session: ${err.message}`);
   }
 }
 
@@ -207,7 +221,12 @@ async function refreshAndReconcile({ forceDiscovery }) {
   await pollCloudStates(gladys);
 
   const ready = registry.values().some((entry) => entry.localKey && entry.dpsByCode.size > 0);
-  if (ready) {
+  if (sharing.expired) {
+    await gladys.setConnectionStatus(false, {
+      en: 'The Smart Life session has expired: connect your Smart Life account again (QR code) in the Configuration screen.',
+      fr: 'La session Smart Life a expiré : reconnectez votre compte Smart Life (QR code) dans l’écran de configuration.',
+    });
+  } else if (ready) {
     await gladys.setConnectionStatus(true);
   } else {
     await gladys.setConnectionStatus(false, {

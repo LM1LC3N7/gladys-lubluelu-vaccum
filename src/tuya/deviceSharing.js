@@ -40,6 +40,16 @@ export class TuyaDeviceSharingClient {
     // (see restoreAfterRespawn()) so a Python crash doesn't silently log the
     // account out until the next container restart.
     this.session = null;
+    // True once Tuya refused the session (refresh_token revoked): only a new
+    // QR login fixes it, so index.js tells the user instead of retrying quietly.
+    this.expired = false;
+  }
+
+  /** The bridge rotated the tokens (`session` event): keep the new ones for a respawn. */
+  onSessionRotated(session) {
+    if (session) {
+      this.session = session;
+    }
   }
 
   /**
@@ -65,6 +75,7 @@ export class TuyaDeviceSharingClient {
     const result = await this.bridge.call('qr_poll', { token, user_code: userCode });
     if (result?.status === 'success' && result.session) {
       this.session = result.session;
+      this.expired = false;
     }
     return result;
   }
@@ -72,7 +83,8 @@ export class TuyaDeviceSharingClient {
   /** Rebuild the bridge's in-memory session after a restart, from a previously-persisted one. */
   async restoreSession(session) {
     const result = await this.bridge.call('restore_session', { session });
-    this.session = session;
+    // `kept`: the bridge already held a newer token of the same account.
+    this.session = result?.session ?? session;
     return result;
   }
 
@@ -87,7 +99,16 @@ export class TuyaDeviceSharingClient {
 
   /** Every device on the linked account, each with its local_key + full DP schema + LAN IP. */
   async discoverDevices() {
-    return this.bridge.call('discover', {});
+    try {
+      const devices = await this.bridge.call('discover', {});
+      this.expired = false;
+      return devices;
+    } catch (err) {
+      if (err.code === 'SESSION_EXPIRED') {
+        this.expired = true;
+      }
+      throw err;
+    }
   }
 
   /** Cloud command fallback for onSetValue() when the local session is down (see src/devices/vacuum.js). */

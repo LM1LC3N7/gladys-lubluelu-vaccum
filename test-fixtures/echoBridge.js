@@ -15,6 +15,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     );
     return;
   }
+  if (request.cmd === 'expired') {
+    process.stdout.write(
+      `${JSON.stringify({ id: request.id, ok: false, error: 'Smart Life session expired', code: 'SESSION_EXPIRED' })}\n`,
+    );
+    return;
+  }
   if (request.cmd === 'exit') {
     process.exit(1);
   }

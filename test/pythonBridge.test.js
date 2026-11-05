@@ -91,3 +91,16 @@ test('PythonBridge: onSpawn runs on a respawn only, its write reaching the new p
     bridge.stop();
   }
 });
+
+test('PythonBridge: a rejected call carries the bridge error code', async () => {
+  const bridge = newBridge();
+  try {
+    await assert.rejects(bridge.call('expired'), (err) => {
+      assert.equal(err.code, 'SESSION_EXPIRED');
+      assert.match(err.message, /session expired/);
+      return true;
+    });
+  } finally {
+    bridge.stop();
+  }
+});

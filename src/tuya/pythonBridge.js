@@ -122,7 +122,11 @@ export class PythonBridge {
     if (!pending) return;
     this.pending.delete(message.id);
     if (message.ok) pending.resolve(message.result);
-    else pending.reject(new Error(message.error ?? 'Unknown Tuya bridge error'));
+    else {
+      const err = new Error(message.error ?? 'Unknown Tuya bridge error');
+      if (message.code) err.code = message.code;
+      pending.reject(err);
+    }
   }
 
   /** Send one request and resolve with its `result`, or reject with its `error`. */

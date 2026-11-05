@@ -108,7 +108,10 @@ export class TuyaDeviceRegistry {
       // "No active device-sharing session" just means the QR login hasn't
       // happened (yet) — expected and silent-ish, not a failure to surface
       // loudly on every refresh tick until the user does log in.
-      const level = /No active device-sharing session/.test(err.message) ? 'debug' : 'error';
+      // An expired session is reported once per refresh by index.js's status.
+      let level = 'error';
+      if (/No active device-sharing session/.test(err.message)) level = 'debug';
+      else if (err.code === 'SESSION_EXPIRED') level = 'warn';
       logger[level](`Device sharing discovery failed: ${err.message}`);
       return;
     }

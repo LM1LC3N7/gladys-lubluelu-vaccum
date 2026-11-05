@@ -131,3 +131,57 @@ test('toRegistryEntry tolerates a device with no IP and no dps', () => {
   assert.equal(entry.ip, undefined);
   assert.equal(entry.dpsByCode.size, 0);
 });
+
+test('TuyaDeviceSharingClient keeps the newer session the bridge already held', async () => {
+  const newer = { user_code: 'C', token_info: { uid: 'u', t: 2 } };
+  const bridge = fakeBridge({
+    restore_session: () => ({ success: true, kept: true, session: newer }),
+  });
+  const client = new TuyaDeviceSharingClient({ bridge });
+  const result = await client.restoreSession({ user_code: 'C', token_info: { uid: 'u', t: 1 } });
+  assert.equal(result.kept, true);
+  assert.deepEqual(client.session, newer);
+});
+
+test('TuyaDeviceSharingClient follows token rotations pushed by the bridge', () => {
+  const client = new TuyaDeviceSharingClient({ bridge: fakeBridge({}) });
+  client.onSessionRotated({ token_info: { t: 5 } });
+  assert.deepEqual(client.session, { token_info: { t: 5 } });
+  client.onSessionRotated(null);
+  assert.deepEqual(client.session, { token_info: { t: 5 } });
+});
+
+test('TuyaDeviceSharingClient flags an expired session until a discovery or QR login succeeds', async () => {
+  let fail = true;
+  const bridge = fakeBridge({
+    discover: () => {
+      if (fail) {
+        const err = new Error('Smart Life session expired');
+        err.code = 'SESSION_EXPIRED';
+        throw err;
+      }
+      return [];
+    },
+    qr_poll: () => ({ status: 'success', session: { token_info: { t: 9 } } }),
+  });
+  const client = new TuyaDeviceSharingClient({ bridge });
+  await assert.rejects(client.discoverDevices(), /expired/);
+  assert.equal(client.expired, true);
+  await client.pollQrLogin('t', 'C');
+  assert.equal(client.expired, false);
+  await assert.rejects(client.discoverDevices(), /expired/);
+  fail = false;
+  await client.discoverDevices();
+  assert.equal(client.expired, false);
+});
+
+test('TuyaDeviceSharingClient does not flag other discovery errors as an expiry', async () => {
+  const bridge = fakeBridge({
+    discover: () => {
+      throw new Error('network down');
+    },
+  });
+  const client = new TuyaDeviceSharingClient({ bridge });
+  await assert.rejects(client.discoverDevices(), /network down/);
+  assert.equal(client.expired, false);
+});

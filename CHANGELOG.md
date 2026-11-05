@@ -10,6 +10,18 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Smart Life session lost after a while ("token is expired", then "sign
+  invalid" on every refresh): Tuya revokes the old refresh token at each
+  renewal, and a renewal made between two hourly saves (by the live updates,
+  a command or a status read) could be replaced by the older saved one when
+  Gladys reconnected or the container restarted. Every renewal is now saved
+  at once, and a reconnection keeps the newer token the bridge already holds.
+- An expired Smart Life session now says so in the integration status, asking
+  for a new QR login, instead of an error with a stack trace every hour. The
+  live updates stop retrying with the dead token.
+
 ## [0.3.2] - 2026-10-13
 
 ### Changed
