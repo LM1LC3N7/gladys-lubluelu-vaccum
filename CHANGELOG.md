@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-05
+
 ### Fixed
 
 - Smart Life session lost after a while ("token is expired", then "sign
@@ -41,6 +43,7 @@ the notes of the version's GitHub Release.
 The releases before this file was started are described by their GitHub
 Releases.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LM1LC3N7/gladys-lubluelu-vaccum/releases/tag/v0.3.1
